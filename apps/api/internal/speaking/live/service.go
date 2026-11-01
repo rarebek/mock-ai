@@ -29,6 +29,9 @@ type Service struct {
 	Provider Provider
 	Model    string
 	Log      *slog.Logger
+	// Settle is how long a student may stay quiet after a substantive answer
+	// before the examiner is asked to decide. Zero uses the production default.
+	Settle time.Duration
 }
 type packet struct {
 	kind       websocket.MessageType
@@ -122,6 +125,12 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 	audioStarted := time.Now()
 	received := 0
 	lastControl := time.Time{}
+	// Turn-taking safety net. The model decides when a turn ends, but if no
+	// tool call ever arrives the session hangs in "listening" forever, which
+	// is what a stalled interview looks like to a student.
+	lastVoiceAt := time.Time{}
+	nudges := 0
+	nudgedAt := time.Time{}
 	spokenQuestion := func() string {
 		if helpSpeech != "" {
 			return helpSpeech
@@ -201,6 +210,50 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 				return e
 			}
 		case <-tick.C:
+			// A student who pauses mid-thought must never be rushed, so the nudge
+			// only fires once they have actually produced a substantive answer and
+			// then gone quiet. Part 2 is a two-minute long turn built out of
+			// pauses, so it is given far more room than Parts 1 and 3.
+			if phase == "listening" && !lastVoiceAt.IsZero() && nudges < 2 && Meaningful(transcript[helpStart:]) {
+				settle := s.Settle
+				if settle <= 0 {
+					settle = 3 * time.Second
+				}
+				if session.Turns[pos].Part == 2 {
+					// The Part 2 long turn is built out of pauses; it gets far more room.
+					settle = settle * 7 / 3
+				}
+				quiet := time.Since(lastVoiceAt)
+				since := time.Since(nudgedAt)
+				if nudges > 0 {
+					since = time.Since(nudgedAt)
+				}
+				due := nudges == 0 && quiet >= settle
+				if nudges == 1 && since >= settle+2*time.Second {
+					due = true
+				}
+				if due {
+					nudges++
+					nudgedAt = time.Now()
+					note := "The student has been silent for " + jsonNumber(int(quiet.Seconds())) + " seconds after speaking. " +
+						"Decide now: call advance_question if their answer is complete, or wait_for_student if they are still mid-thought. Do not speak before the tool."
+					if nudges == 2 {
+						note = "The student has now been silent for " + jsonNumber(int(quiet.Seconds())) + " seconds. " +
+							"You must call a tool now: advance_question if the answer is complete, wait_for_student if it is not."
+					}
+					if s.Log != nil {
+						s.Log.Info("live speaking silence nudge", "session_id", session.ID, "position", pos,
+							"part", session.Turns[pos].Part, "quiet_ms", quiet.Milliseconds(), "attempt", nudges)
+					}
+					if e = write(ctx, upstream, Control(note)); e != nil {
+						return e
+					}
+				} else if nudges == 2 && quiet > 25*time.Second && s.Log != nil {
+					s.Log.Error("live speaking turn taking stalled", "session_id", session.ID, "position", pos,
+						"part", session.Turns[pos].Part, "quiet_ms", quiet.Milliseconds(), "transcript_chars", len(transcript))
+					nudges = 3
+				}
+			}
 			if phase == "preparing" && !time.Now().Before(prepUntil) {
 				phase = "examiner"
 				allowOutput = true
@@ -419,12 +472,21 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 			}
 			content := msg.ServerContent
 			if phase == "listening" {
+				if strings.TrimSpace(content.InputTranscription.Text) != "" {
+					lastVoiceAt = time.Now()
+					nudges, nudgedAt = 0, time.Time{}
+				}
 				transcript += content.InputTranscription.Text
 				if len(transcript) > 16000 {
 					return d.ErrLimit
 				}
 			}
 			for _, call := range msg.ToolCall.FunctionCalls {
+				if s.Log != nil {
+					s.Log.Info("live speaking tool call", "session_id", session.ID, "position", pos,
+						"part", session.Turns[pos].Part, "phase", phase, "tool", call.Name,
+						"transcript_chars", len(strings.TrimSpace(transcript[helpStart:])))
+				}
 				response := map[string]any{"instruction": "Stay silent and wait for the student to finish."}
 				if phase == "examiner" {
 					response = map[string]any{"question": spokenQuestion(), "instruction": "The controller has already approved this examiner turn. Speak the supplied words aloud now; do not call another tool or wait for a student answer before asking the question."}
@@ -455,8 +517,25 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 						response = map[string]any{"question": helpSpeech, "instruction": helpQuestionInstruction}
 					case "advance_question", "finish_interview":
 						valid := Meaningful(transcript[helpStart:])
+						refusal := ""
+						if !valid {
+							refusal = "too_short"
+						}
 						if _, err := d.ValidateAudio(Wave(pcm), session.Turns[pos].Seconds); err != nil {
-							valid = false
+							valid, refusal = false, "audio_rejected"
+						}
+						if !valid {
+							if s.Log != nil {
+								s.Log.Warn("live speaking advance refused", "session_id", session.ID, "position", pos,
+									"tool", call.Name, "reason", refusal,
+									"transcript_chars", len(strings.TrimSpace(transcript[helpStart:])))
+							}
+							// A refusal on noise stays silent: answering a cough aloud is
+							// exactly what the turn-taking rules forbid. A refusal on real
+							// but too-brief speech gets a way forward instead of a freeze.
+							if refusal == "too_short" && spoken(transcript[helpStart:]) > 0 {
+								response = map[string]any{"instruction": "That answer was too brief to save. Stay on this question and invite the student to say a little more."}
+							}
 						}
 						final := pos == len(session.Turns)-1
 						if valid && ((final && call.Name == "finish_interview") || (!final && call.Name == "advance_question")) {

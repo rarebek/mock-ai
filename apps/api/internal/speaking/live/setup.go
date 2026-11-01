@@ -56,7 +56,9 @@ func Setup(s d.Session, pos int, resumeHandle string) map[string]any {
 func Control(text string) map[string]any {
 	return map[string]any{"clientContent": map[string]any{"turns": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": "[Application controller] " + text}}}}, "turnComplete": true}}
 }
-func Meaningful(text string) bool {
+// spoken counts real words, ignoring fillers, so noise and a genuinely short
+// answer can be told apart.
+func spoken(text string) int {
 	ignore := map[string]bool{"um": true, "umm": true, "uh": true, "hmm": true, "erm": true, "ah": true, "oh": true}
 	n := 0
 	for _, w := range strings.Fields(strings.ToLower(text)) {
@@ -65,8 +67,9 @@ func Meaningful(text string) bool {
 			n++
 		}
 	}
-	return n >= 3
+	return n
 }
+func Meaningful(text string) bool { return spoken(text) >= 3 }
 func Wave(pcm []byte) []byte {
 	b := make([]byte, 44, len(pcm)+44)
 	copy(b, "RIFF")

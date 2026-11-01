@@ -408,3 +408,122 @@ func TestLiveEndsTimedAnswerAndAdvancesWhenTranscriptIsEmpty(t *testing.T) {
 		t.Fatal("timed empty answer was not persisted as skipped")
 	}
 }
+
+// A student who finishes must be moved on; a student who is still thinking must
+// not be. The examiner decides either way — the server only guarantees it is
+// asked, because without that the session hangs in "listening" forever.
+func TestLiveSilenceNudgeWaitsForThinkersAndPromptsAfterAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		transcript string
+		wantNudge  bool
+	}{
+		{"a finished answer is handed to the examiner to decide", "I live in Tashkent with my family", true},
+		{"a student still gathering their thought is left alone", "well um", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			upstream := make(chan *websocket.Conn, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c, e := websocket.Accept(w, r, nil)
+				if e != nil {
+					return
+				}
+				upstream <- c
+				<-ctx.Done()
+				c.CloseNow()
+			}))
+			defer func() { cancel(); server.Close() }()
+			topic, turns, _ := d.NewPlan()
+			session := d.Session{ID: "session", UserID: "user", LiveModel: "test", Turns: turns, Topic: topic}
+			repo := &testRepo{saves: make(chan saved, 2), released: make(chan bool, 1)}
+			service := Service{Repo: repo, Provider: testProvider{strings.Replace(server.URL, "http", "ws", 1)}, Settle: 150 * time.Millisecond}
+			app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c, e := websocket.Accept(w, r, nil)
+				if e != nil {
+					return
+				}
+				defer c.CloseNow()
+				_ = service.Run(ctx, c, session)
+			}))
+			defer func() { cancel(); app.Close() }()
+			client, _, e := websocket.Dial(ctx, strings.Replace(app.URL, "http", "ws", 1), nil)
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer client.CloseNow()
+			provider := <-upstream
+			read := func(c *websocket.Conn) map[string]any {
+				t.Helper()
+				_, b, err := c.Read(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var v map[string]any
+				_ = json.Unmarshal(b, &v)
+				return v
+			}
+			send := func(c *websocket.Conn, v any) {
+				t.Helper()
+				if err := write(ctx, c, v); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Mirror the handshake the progression test establishes.
+			read(provider) // setup
+			send(provider, map[string]any{"setupComplete": map[string]any{}})
+			read(client)
+			read(provider)
+			send(provider, map[string]any{"serverContent": map[string]bool{"turnComplete": true}})
+			if read(provider)["clientContent"] == nil {
+				t.Fatal("missing empty-audio retry")
+			}
+			send(provider, map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]string{"data": base64.StdEncoding.EncodeToString(make([]byte, 4800)), "mimeType": "audio/pcm;rate=24000"}}}}, "turnComplete": true}})
+			if kind, _, err := client.Read(ctx); err != nil || kind != websocket.MessageBinary {
+				t.Fatal("examiner audio missing", err)
+			}
+			read(client)
+			send(client, map[string]string{"type": "playback_done"})
+			if read(client)["phase"] != "listening" {
+				t.Fatal("not listening")
+			}
+			// The student speaks, then goes quiet.
+			send(provider, map[string]any{"serverContent": map[string]any{"inputTranscription": map[string]string{"text": tc.transcript}}})
+
+			// Read on a goroutine: cancelling a read context closes the websocket,
+			// so polling with short timeouts would kill the connection under test.
+			messages := make(chan string, 8)
+			go func() {
+				for {
+					_, b, err := provider.Read(ctx)
+					if err != nil {
+						close(messages)
+						return
+					}
+					messages <- string(b)
+				}
+			}()
+			nudged := false
+			deadline := time.After(2500 * time.Millisecond)
+		wait:
+			for {
+				select {
+				case m, ok := <-messages:
+					if !ok {
+						break wait
+					}
+					if strings.Contains(m, "Decide now") || strings.Contains(m, "You must call a tool now") {
+						nudged = true
+						break wait
+					}
+				case <-deadline:
+					break wait
+				}
+			}
+			if nudged != tc.wantNudge {
+				t.Fatalf("nudge=%v, want %v (transcript %q)", nudged, tc.wantNudge, tc.transcript)
+			}
+		})
+	}
+}
