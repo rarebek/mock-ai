@@ -618,12 +618,20 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 							helpSpeech = explanation
 						}
 						helpStart = len(transcript)
+						clearVoicing()
 						allowOutput = true
 						outputBytes, outputRetries = 0, 0
 						phase = "examiner"
 						response = map[string]any{"question": helpSpeech, "instruction": helpQuestionInstruction}
 					case "advance_question", "finish_interview":
-						valid := Meaningful(transcript[helpStart:])
+						// The model decided the answer was finished, and it heard the
+						// audio. A short transcript is not evidence of a short answer:
+						// production returned seven characters for a 27-second answer,
+						// and this guard refused the model's correct decision on every
+						// question. Accept it when either the text or the measured
+						// speech shows the student spoke; ValidateAudio below is still
+						// the hard gate on what gets saved.
+						valid := Meaningful(transcript[helpStart:]) || voicedMs >= 2000
 						refusal := ""
 						if !valid {
 							refusal = "too_short"
@@ -642,6 +650,14 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 							// but too-brief speech gets a way forward instead of a freeze.
 							if refusal == "too_short" && spoken(transcript[helpStart:]) > 0 {
 								response = map[string]any{"instruction": "That answer was too brief to save. Stay on this question and invite the student to say a little more."}
+								// Entering "listening" disables model output, and this path
+								// never re-enabled it: the examiner spoke and every byte was
+								// discarded below, leaving the student in silence with no
+								// way out. Hand the turn to the examiner properly, the way
+								// an approved question or a clarification does.
+								allowOutput = true
+								outputBytes, outputRetries = 0, 0
+								phase = "examiner"
 							}
 						}
 						final := pos == len(session.Turns)-1
@@ -690,6 +706,17 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 			if content.Interrupted {
 				if e = write(ctx, client, map[string]string{"type": "interrupted"}); e != nil {
 					return e
+				}
+			}
+			// Output is disabled while the student holds the turn, so anything the
+			// model says then is deliberately discarded. That silence hid a real
+			// deadlock for days: the examiner was speaking and nobody could tell.
+			if !allowOutput && s.Log != nil {
+				for _, part := range content.ModelTurn.Parts {
+					if part.InlineData != nil && part.InlineData.Data != "" {
+						s.Log.Warn("live speaking examiner audio discarded", "session_id", session.ID, "position", pos, "phase", phase)
+						break
+					}
 				}
 			}
 			if allowOutput {

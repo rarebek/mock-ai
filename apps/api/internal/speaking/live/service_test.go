@@ -766,3 +766,141 @@ func TestLiveResolvesTurnWhenTranscriptionIsEmpty(t *testing.T) {
 		t.Fatal("interview stayed deadlocked: the server never resolved the turn")
 	}
 }
+
+// A refusal that asks the examiner to speak must actually let it be heard.
+// Entering "listening" disables model output, and the refusal path never
+// re-enabled it, so the examiner's reply was discarded byte for byte and the
+// student sat in silence with nothing able to move the interview on.
+func TestLiveRefusedAdvanceIsStillSpokenToTheStudent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	upstream := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, e := websocket.Accept(w, r, nil)
+		if e != nil {
+			return
+		}
+		upstream <- c
+		<-ctx.Done()
+		c.CloseNow()
+	}))
+	defer func() { cancel(); server.Close() }()
+	topic, turns, _ := d.NewPlan()
+	session := d.Session{ID: "session", UserID: "user", LiveModel: "test", Turns: turns, Topic: topic}
+	repo := &testRepo{saves: make(chan saved, 4), released: make(chan bool, 1)}
+	service := Service{Repo: repo, Provider: testProvider{strings.Replace(server.URL, "http", "ws", 1)}, Settle: 120 * time.Millisecond}
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, e := websocket.Accept(w, r, nil)
+		if e != nil {
+			return
+		}
+		defer c.CloseNow()
+		_ = service.Run(ctx, c, session)
+	}))
+	defer func() { cancel(); app.Close() }()
+	client, _, e := websocket.Dial(ctx, strings.Replace(app.URL, "http", "ws", 1), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer client.CloseNow()
+	provider := <-upstream
+	read := func(c *websocket.Conn) map[string]any {
+		t.Helper()
+		_, b, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v map[string]any
+		_ = json.Unmarshal(b, &v)
+		return v
+	}
+	send := func(c *websocket.Conn, v any) {
+		t.Helper()
+		if err := write(ctx, c, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read(provider)
+	send(provider, map[string]any{"setupComplete": map[string]any{}})
+	read(client)
+	read(provider)
+	send(provider, map[string]any{"serverContent": map[string]bool{"turnComplete": true}})
+	if read(provider)["clientContent"] == nil {
+		t.Fatal("missing empty-audio retry")
+	}
+	send(provider, map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]string{"data": base64.StdEncoding.EncodeToString(make([]byte, 4800)), "mimeType": "audio/pcm;rate=24000"}}}}, "turnComplete": true}})
+	if kind, _, err := client.Read(ctx); err != nil || kind != websocket.MessageBinary {
+		t.Fatal("examiner audio missing", err)
+	}
+	read(client)
+	send(client, map[string]string{"type": "playback_done"})
+	if read(client)["phase"] != "listening" {
+		t.Fatal("not listening")
+	}
+	// Audible, long enough for the recording to validate, but under the two
+	// seconds of speech that count as a finished answer — so the advance is
+	// refused and the examiner is told to invite a little more.
+	tone := make([]byte, 48000)
+	for i := 0; i+1 < len(tone); i += 2 {
+		v := int16(9000)
+		if (i/2)%40 < 20 {
+			v = -9000
+		}
+		binary.LittleEndian.PutUint16(tone[i:], uint16(v))
+	}
+	for off := 0; off < len(tone); off += 4096 {
+		end := off + 4096
+		if end > len(tone) {
+			end = len(tone)
+		}
+		if err := client.Write(ctx, websocket.MessageBinary, tone[off:end]); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	send(provider, map[string]any{"serverContent": map[string]any{"inputTranscription": map[string]string{"text": "Hello."}}})
+	send(provider, map[string]any{"toolCall": map[string]any{"functionCalls": []any{map[string]any{"id": "call", "name": "advance_question", "args": map[string]string{"question": "What is your typical weekday like?"}}}}})
+
+	var instruction string
+	for instruction == "" {
+		v := read(provider)
+		if v["realtimeInput"] != nil || v["clientContent"] != nil {
+			continue
+		}
+		raw, _ := json.Marshal(v)
+		var frame struct {
+			ToolResponse struct {
+				FunctionResponses []struct {
+					Name     string `json:"name"`
+					Response struct {
+						Instruction string `json:"instruction"`
+						Question    string `json:"question"`
+					} `json:"response"`
+				} `json:"functionResponses"`
+			} `json:"toolResponse"`
+		}
+		if json.Unmarshal(raw, &frame) != nil || len(frame.ToolResponse.FunctionResponses) == 0 {
+			continue
+		}
+		instruction = frame.ToolResponse.FunctionResponses[0].Response.Instruction
+	}
+	if !strings.Contains(instruction, "too brief") {
+		t.Fatalf("expected a too-brief refusal, got %q", instruction)
+	}
+	if len(repo.saves) != 0 {
+		t.Fatal("a refused advance must not save the turn")
+	}
+	// The examiner now replies. Before the fix every byte of this was dropped.
+	send(provider, map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]string{"data": base64.StdEncoding.EncodeToString(make([]byte, 4800)), "mimeType": "audio/pcm;rate=24000"}}}}, "turnComplete": true}})
+	deadline, stop := context.WithTimeout(ctx, 5*time.Second)
+	defer stop()
+	for {
+		kind, _, err := client.Read(deadline)
+		if err != nil {
+			t.Fatal("the examiner's reply never reached the student:", err)
+		}
+		if kind == websocket.MessageBinary {
+			return
+		}
+	}
+}

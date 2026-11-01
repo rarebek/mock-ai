@@ -209,7 +209,15 @@ func TestLearningIntegration(t *testing.T) {
 	if len(mistakes) != 1 || mistakes[0].Resolved {
 		t.Fatal("missing unresolved mistake")
 	}
-	request("POST", "/api/v1/me/mistakes/"+qid+"/retry", map[string]any{"values": feedback.AcceptedAnswer[:1]}, cookie, 200)
+	// A "choose TWO" question is only correct when both answers are given, while
+	// a single-answer question lists alternatives of which exactly one counts.
+	// The feed's first question is whichever the practice ordering returns, so
+	// the retry has to follow its type rather than assume one of them.
+	retry := feedback.AcceptedAnswer[:1]
+	if practice[0].Type == "multiple_select" {
+		retry = feedback.AcceptedAnswer
+	}
+	request("POST", "/api/v1/me/mistakes/"+qid+"/retry", map[string]any{"values": retry}, cookie, 200)
 	notebook = request("GET", "/api/v1/me/mistakes", nil, cookie, 200)
 	json.Unmarshal(notebook["mistakes"], &mistakes)
 	if !mistakes[0].Resolved {
