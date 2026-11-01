@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	d "github.com/own/mock-ai/apps/api/internal/speaking/domain"
+	"math"
 	"strings"
 )
 
@@ -56,6 +57,7 @@ func Setup(s d.Session, pos int, resumeHandle string) map[string]any {
 func Control(text string) map[string]any {
 	return map[string]any{"clientContent": map[string]any{"turns": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": "[Application controller] " + text}}}}, "turnComplete": true}}
 }
+
 // spoken counts real words, ignoring fillers, so noise and a genuinely short
 // answer can be told apart.
 func spoken(text string) int {
@@ -70,6 +72,21 @@ func spoken(text string) int {
 	return n
 }
 func Meaningful(text string) bool { return spoken(text) >= 3 }
+
+// rms16 measures the loudness of a little-endian 16-bit PCM chunk, 0..1, so a
+// stalled interview can distinguish "no audio arrived" from "silence arrived".
+func rms16(b []byte) float64 {
+	n := len(b) / 2
+	if n == 0 {
+		return 0
+	}
+	var sum float64
+	for i := 0; i+1 < len(b); i += 2 {
+		v := float64(int16(binary.LittleEndian.Uint16(b[i:]))) / 32768
+		sum += v * v
+	}
+	return math.Sqrt(sum / float64(n))
+}
 func Wave(pcm []byte) []byte {
 	b := make([]byte, 44, len(pcm)+44)
 	copy(b, "RIFF")

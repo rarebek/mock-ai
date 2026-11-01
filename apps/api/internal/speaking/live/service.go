@@ -131,6 +131,12 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 	lastVoiceAt := time.Time{}
 	nudges := 0
 	nudgedAt := time.Time{}
+	// Ingress accounting: whether the student's audio arrives at all, and
+	// whether it carries any signal, is the first thing to know when an
+	// interview stalls. Nothing recorded it before.
+	var peak float64
+	loudChunks := 0
+	reportedAt := time.Time{}
 	spokenQuestion := func() string {
 		if helpSpeech != "" {
 			return helpSpeech
@@ -214,6 +220,13 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 			// only fires once they have actually produced a substantive answer and
 			// then gone quiet. Part 2 is a two-minute long turn built out of
 			// pauses, so it is given far more room than Parts 1 and 3.
+			if phase == "listening" && s.Log != nil && time.Since(reportedAt) >= 5*time.Second {
+				reportedAt = time.Now()
+				s.Log.Info("live speaking ingress", "session_id", session.ID, "position", pos,
+					"client_audio_bytes", received, "turn_pcm_bytes", len(pcm),
+					"peak_rms", int(peak*1000), "chunks_with_signal", loudChunks,
+					"transcript_chars", len(strings.TrimSpace(transcript[helpStart:])))
+			}
 			if phase == "listening" && !lastVoiceAt.IsZero() && nudges < 2 && Meaningful(transcript[helpStart:]) {
 				settle := s.Settle
 				if settle <= 0 {
@@ -334,6 +347,12 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					continue
 				}
 				pcm = append(pcm, p.data...)
+				if rms := rms16(p.data); rms > peak {
+					peak = rms
+				}
+				if rms16(p.data) > 0.01 {
+					loudChunks++
+				}
 				e = write(ctx, upstream, map[string]any{"realtimeInput": map[string]any{"audio": map[string]string{"data": base64.StdEncoding.EncodeToString(p.data), "mimeType": "audio/pcm;rate=16000"}}})
 				if e != nil {
 					return e
