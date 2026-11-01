@@ -137,6 +137,12 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 	var peak, clientRMS, clientPeak float64
 	loudChunks := 0
 	reportedAt := time.Time{}
+	// How much of this turn was actually speech. Turn-taking used to key off
+	// the transcript, and production returned 7 characters for a 27-second
+	// turn: every guard below sat waiting for text that never came and the
+	// interview deadlocked. Measured loudness is the reliable signal.
+	voicedMs := 0
+	clearVoicing := func() { voicedMs, peak, loudChunks = 0, 0, 0 }
 	spokenQuestion := func() string {
 		if helpSpeech != "" {
 			return helpSpeech
@@ -192,6 +198,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 		pcm = nil
 		transcript = ""
 		helpStart = 0
+		clearVoicing()
 		helpSpeech = ""
 		prepared = false
 		prepUntil = time.Time{}
@@ -226,9 +233,14 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					"client_audio_bytes", received, "turn_pcm_bytes", len(pcm),
 					"peak_rms", int(peak*1000), "chunks_with_signal", loudChunks,
 					"browser_rms", int(clientRMS*1000), "browser_peak_rms", int(clientPeak*1000),
+					"voiced_ms", voicedMs,
 					"transcript_chars", len(strings.TrimSpace(transcript[helpStart:])))
 			}
-			if phase == "listening" && !lastVoiceAt.IsZero() && nudges < 2 && Meaningful(transcript[helpStart:]) {
+			// Substantive enough to be a finished answer rather than a pause: two
+			// seconds of speech, or a transcript with real words in it. Either is
+			// sufficient; requiring both is what stalled the interview.
+			answered := voicedMs >= 2000 || Meaningful(transcript[helpStart:])
+			if phase == "listening" && !lastVoiceAt.IsZero() && nudges < 2 && answered {
 				settle := s.Settle
 				if settle <= 0 {
 					settle = 3 * time.Second
@@ -270,7 +282,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 			// A real examiner moves on. After a long silence following an answer
 			// that is both substantive and audible, the server advances using the
 			// configured next question, never one the model proposed.
-			if phase == "listening" && nudges >= 2 && !lastVoiceAt.IsZero() && Meaningful(transcript[helpStart:]) {
+			if phase == "listening" && nudges >= 2 && !lastVoiceAt.IsZero() && answered {
 				// Derived from the same base as the nudges so the whole ladder
 				// scales together and stays testable: 15s on Parts 1 and 3, 35s on
 				// the Part 2 long turn.
@@ -299,6 +311,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					session.Turns[pos].Answered = true
 					session.Turns[pos].Transcript = transcript
 					pcm, transcript, helpStart = nil, "", 0
+					clearVoicing()
 					allowOutput, outputBytes, outputRetries = true, 0, 0
 					lastVoiceAt, nudges, nudgedAt = time.Time{}, 0, time.Time{}
 					phase = "examiner"
@@ -385,6 +398,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					pcm = nil
 					transcript = ""
 					helpStart = 0
+					clearVoicing()
 					prepared = false
 					allowOutput = true
 					outputBytes, outputRetries = 0, 0
@@ -399,11 +413,22 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					continue
 				}
 				pcm = append(pcm, p.data...)
-				if rms := rms16(p.data); rms > peak {
+				rms := rms16(p.data)
+				if rms > peak {
 					peak = rms
 				}
-				if rms16(p.data) > 0.01 {
+				if rms > 0.01 {
 					loudChunks++
+				}
+				// Voiced relative to this turn's own loudest moment, so a quiet
+				// microphone is judged on the same scale as a loud one. Measured
+				// silence sits around 0.01 and speech around 0.18, so a quarter of
+				// the peak separates them cleanly. The absolute floor keeps a
+				// silent room from treating its own hiss as an answer.
+				if peak > 0.02 && rms > peak/4 {
+					voicedMs += len(p.data) * 1000 / 32000
+					lastVoiceAt = time.Now()
+					nudges, nudgedAt = 0, time.Time{}
 				}
 				e = write(ctx, upstream, map[string]any{"realtimeInput": map[string]any{"audio": map[string]string{"data": base64.StdEncoding.EncodeToString(p.data), "mimeType": "audio/pcm;rate=16000"}}})
 				if e != nil {
@@ -639,6 +664,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 							pcm = nil
 							transcript = ""
 							helpStart = 0
+							clearVoicing()
 							allowOutput = true
 							outputBytes, outputRetries = 0, 0
 							phase = "examiner"
