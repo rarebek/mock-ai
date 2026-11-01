@@ -134,7 +134,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 	// Ingress accounting: whether the student's audio arrives at all, and
 	// whether it carries any signal, is the first thing to know when an
 	// interview stalls. Nothing recorded it before.
-	var peak float64
+	var peak, clientRMS, clientPeak float64
 	loudChunks := 0
 	reportedAt := time.Time{}
 	spokenQuestion := func() string {
@@ -225,6 +225,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 				s.Log.Info("live speaking ingress", "session_id", session.ID, "position", pos,
 					"client_audio_bytes", received, "turn_pcm_bytes", len(pcm),
 					"peak_rms", int(peak*1000), "chunks_with_signal", loudChunks,
+					"browser_rms", int(clientRMS*1000), "browser_peak_rms", int(clientPeak*1000),
 					"transcript_chars", len(strings.TrimSpace(transcript[helpStart:])))
 			}
 			if phase == "listening" && !lastVoiceAt.IsZero() && nudges < 2 && Meaningful(transcript[helpStart:]) {
@@ -360,12 +361,23 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 				continue
 			}
 			var command struct {
-				Type string `json:"type"`
+				Type string  `json:"type"`
+				RMS  float64 `json:"rms"`
 			}
 			if json.Unmarshal(p.data, &command) != nil {
 				return d.ErrInvalid
 			}
 			switch command.Type {
+			case "mic_level":
+				// What the browser hears, to compare against what we receive. If the
+				// browser measures speech and the server receives silence, the fault
+				// is in the capture worklet; if both are silent, it is the device or
+				// the getUserMedia constraints.
+				if command.RMS > clientPeak {
+					clientPeak = command.RMS
+				}
+				clientRMS = command.RMS
+				continue
 			case "playback_done":
 				if !awaitPlayback {
 					continue
