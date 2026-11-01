@@ -527,3 +527,120 @@ func TestLiveSilenceNudgeWaitsForThinkersAndPromptsAfterAnswers(t *testing.T) {
 		})
 	}
 }
+
+// Production deadlock: the examiner answered wait_for_student to both nudges
+// and then sat in silence while the student waited for it. After a long quiet
+// spell following a substantive, audible answer the server resolves the turn
+// itself rather than leaving the interview hanging.
+func TestLiveAdvancesWhenExaminerIgnoresBothNudges(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	upstream := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, e := websocket.Accept(w, r, nil)
+		if e != nil {
+			return
+		}
+		upstream <- c
+		<-ctx.Done()
+		c.CloseNow()
+	}))
+	defer func() { cancel(); server.Close() }()
+	topic, turns, _ := d.NewPlan()
+	session := d.Session{ID: "session", UserID: "user", LiveModel: "test", Turns: turns, Topic: topic}
+	repo := &testRepo{saves: make(chan saved, 4), released: make(chan bool, 1)}
+	service := Service{Repo: repo, Provider: testProvider{strings.Replace(server.URL, "http", "ws", 1)}, Settle: 120 * time.Millisecond}
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, e := websocket.Accept(w, r, nil)
+		if e != nil {
+			return
+		}
+		defer c.CloseNow()
+		_ = service.Run(ctx, c, session)
+	}))
+	defer func() { cancel(); app.Close() }()
+	client, _, e := websocket.Dial(ctx, strings.Replace(app.URL, "http", "ws", 1), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer client.CloseNow()
+	provider := <-upstream
+	read := func(c *websocket.Conn) map[string]any {
+		t.Helper()
+		_, b, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v map[string]any
+		_ = json.Unmarshal(b, &v)
+		return v
+	}
+	send := func(c *websocket.Conn, v any) {
+		t.Helper()
+		if err := write(ctx, c, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read(provider)
+	send(provider, map[string]any{"setupComplete": map[string]any{}})
+	read(client)
+	read(provider)
+	send(provider, map[string]any{"serverContent": map[string]bool{"turnComplete": true}})
+	if read(provider)["clientContent"] == nil {
+		t.Fatal("missing empty-audio retry")
+	}
+	send(provider, map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]string{"data": base64.StdEncoding.EncodeToString(make([]byte, 4800)), "mimeType": "audio/pcm;rate=24000"}}}}, "turnComplete": true}})
+	if kind, _, err := client.Read(ctx); err != nil || kind != websocket.MessageBinary {
+		t.Fatal("examiner audio missing", err)
+	}
+	read(client)
+	send(client, map[string]string{"type": "playback_done"})
+	if read(client)["phase"] != "listening" {
+		t.Fatal("not listening")
+	}
+	// Audible speech, so the answer is real and not silence.
+	tone := make([]byte, 64000)
+	for i := 0; i+1 < len(tone); i += 2 {
+		v := int16(9000)
+		if (i/2)%40 < 20 {
+			v = -9000
+		}
+		binary.LittleEndian.PutUint16(tone[i:], uint16(v))
+	}
+	// The browser streams the microphone in small frames and the server caps a
+	// client read at 8KB, so send it the way the real client does.
+	for off := 0; off < len(tone); off += 4096 {
+		end := off + 4096
+		if end > len(tone) {
+			end = len(tone)
+		}
+		if err := client.Write(ctx, websocket.MessageBinary, tone[off:end]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(provider, map[string]any{"serverContent": map[string]any{"inputTranscription": map[string]string{"text": "I live in Tashkent with my family"}}})
+
+	// Drain the upstream; the examiner never answers a nudge.
+	messages := make(chan string, 32)
+	go func() {
+		for {
+			_, b, err := provider.Read(ctx)
+			if err != nil {
+				close(messages)
+				return
+			}
+			messages <- string(b)
+		}
+	}()
+	select {
+	case got := <-repo.saves:
+		if got.pos != 0 {
+			t.Fatalf("saved position %d, want 0", got.pos)
+		}
+		if !strings.Contains(got.text, "Tashkent") {
+			t.Fatalf("saved transcript %q lost the answer", got.text)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("interview stayed deadlocked: the server never resolved the turn")
+	}
+}

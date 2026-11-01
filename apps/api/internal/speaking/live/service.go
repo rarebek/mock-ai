@@ -262,10 +262,61 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					if e = write(ctx, upstream, Control(note)); e != nil {
 						return e
 					}
-				} else if nudges == 2 && quiet > 25*time.Second && s.Log != nil {
-					s.Log.Error("live speaking turn taking stalled", "session_id", session.ID, "position", pos,
-						"part", session.Turns[pos].Part, "quiet_ms", quiet.Milliseconds(), "transcript_chars", len(transcript))
-					nudges = 3
+				}
+			}
+			// Both nudges ignored. Production showed the examiner answering
+			// wait_for_student twice and then sitting in silence while the student
+			// waited for it — a deadlock in which each side waits for the other.
+			// A real examiner moves on. After a long silence following an answer
+			// that is both substantive and audible, the server advances using the
+			// configured next question, never one the model proposed.
+			if phase == "listening" && nudges >= 2 && !lastVoiceAt.IsZero() && Meaningful(transcript[helpStart:]) {
+				// Derived from the same base as the nudges so the whole ladder
+				// scales together and stays testable: 15s on Parts 1 and 3, 35s on
+				// the Part 2 long turn.
+				hard := s.Settle
+				if hard <= 0 {
+					hard = 3 * time.Second
+				}
+				if session.Turns[pos].Part == 2 {
+					hard = hard * 7 / 3
+				}
+				hard *= 5
+				if _, audioErr := d.ValidateAudio(Wave(pcm), session.Turns[pos].Seconds); audioErr == nil && time.Since(lastVoiceAt) >= hard {
+					final := pos == len(session.Turns)-1
+					next := ""
+					if !final {
+						next = session.Turns[pos+1].Prompt
+					}
+					if s.Log != nil {
+						s.Log.Warn("live speaking advanced on silence", "session_id", session.ID, "position", pos,
+							"part", session.Turns[pos].Part, "quiet_ms", time.Since(lastVoiceAt).Milliseconds(),
+							"transcript_chars", len(strings.TrimSpace(transcript[helpStart:])), "final", final)
+					}
+					if e = s.Repo.SaveLive(ctx, session, int32(pos), Wave(pcm), transcript, true, next); e != nil {
+						return e
+					}
+					session.Turns[pos].Answered = true
+					session.Turns[pos].Transcript = transcript
+					pcm, transcript, helpStart = nil, "", 0
+					allowOutput, outputBytes, outputRetries = true, 0, 0
+					lastVoiceAt, nudges, nudgedAt = time.Time{}, 0, time.Time{}
+					phase = "examiner"
+					instruction := "The student's answer is complete and saved. Thank them briefly and say their report will be prepared."
+					if !final {
+						pos++
+						session.Turns[pos].Prompt = next
+						prepared = false
+						instruction = "The student's answer is complete and saved. " + nextQuestionInstruction + " The question is: " + next
+					} else {
+						finished = true
+					}
+					if e = state(); e != nil {
+						return e
+					}
+					if e = write(ctx, upstream, Control(instruction)); e != nil {
+						return e
+					}
 				}
 			}
 			if phase == "preparing" && !time.Now().Before(prepUntil) {
