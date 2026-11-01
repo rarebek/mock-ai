@@ -32,7 +32,7 @@ func str(v pgtype.UUID) string {
 	return s.(string)
 }
 func mapRow(v db.WritingSubmission) app.Submission {
-	return app.Submission{RunID: str(v.RunID), ID: str(v.ID), ParentID: str(v.ParentID), Prompt: v.Prompt, Essay: v.Essay, Revision: v.Revision, Status: v.Status, Report: v.Report, Model: v.Model, RubricVersion: v.RubricVersion, ErrorCode: v.ErrorCode, CreatedAt: v.CreatedAt.Time, UpdatedAt: v.UpdatedAt.Time}
+	return app.Submission{Reference: v.Reference, RunID: str(v.RunID), ID: str(v.ID), ParentID: str(v.ParentID), Prompt: v.Prompt, Essay: v.Essay, Revision: v.Revision, Status: v.Status, Report: v.Report, Model: v.Model, RubricVersion: v.RubricVersion, ErrorCode: v.ErrorCode, CreatedAt: v.CreatedAt.Time, UpdatedAt: v.UpdatedAt.Time}
 }
 func result(v db.WritingSubmission, e error) (app.Submission, error) {
 	if errors.Is(e, pgx.ErrNoRows) {
@@ -49,7 +49,20 @@ func (r *Repository) Create(ctx context.Context, u string, i app.Input) (app.Sub
 	if e != nil {
 		return app.Submission{}, app.ErrNotFound
 	}
-	return result(r.q.CreateWriting(ctx, db.CreateWritingParams{UserID: uid, ParentID: parent, Prompt: i.Prompt, Essay: i.Essay}))
+	var reference []byte
+	if i.ParentID != "" {
+		previous, err := r.Get(ctx, u, i.ParentID)
+		if err != nil {
+			return app.Submission{}, err
+		}
+		reference = previous.Reference
+	} else {
+		reference, e = r.reference(ctx, uid, i)
+		if e != nil {
+			return app.Submission{}, e
+		}
+	}
+	return result(r.q.CreateWriting(ctx, db.CreateWritingParams{UserID: uid, ParentID: parent, Prompt: i.Prompt, Essay: i.Essay, Reference: reference}))
 }
 func (r *Repository) Get(ctx context.Context, u, s string) (app.Submission, error) {
 	uid, e := id(u)
@@ -83,7 +96,18 @@ func (r *Repository) Save(ctx context.Context, u, s string, i app.Input) (app.Su
 	if e != nil {
 		return app.Submission{}, app.ErrNotFound
 	}
-	v, e := r.q.SaveWriting(ctx, db.SaveWritingParams{UserID: uid, ID: sid, Prompt: i.Prompt, Essay: i.Essay, Revision: i.Revision})
+	previous, e := r.Get(ctx, u, s)
+	if e != nil {
+		return app.Submission{}, e
+	}
+	reference := previous.Reference
+	if previous.Prompt != i.Prompt || (i.ContentID != "" && string(reference) == "{}") {
+		reference, e = r.reference(ctx, uid, i)
+		if e != nil {
+			return app.Submission{}, e
+		}
+	}
+	v, e := r.q.SaveWriting(ctx, db.SaveWritingParams{UserID: uid, ID: sid, Prompt: i.Prompt, Essay: i.Essay, Revision: i.Revision, Reference: reference})
 	if errors.Is(e, pgx.ErrNoRows) {
 		_, err := r.Get(ctx, u, s)
 		if err != nil {

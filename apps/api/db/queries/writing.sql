@@ -9,7 +9,7 @@ SELECT ciphertext FROM ai_provider_keys WHERE provider='gemini' AND enabled ORDE
 SELECT EXISTS(SELECT 1 FROM ai_provider_keys WHERE provider='gemini' AND enabled)::boolean;
 
 -- name: CreateWriting :one
-INSERT INTO writing_submissions(user_id,parent_id,prompt,essay) VALUES($1,$2,$3,$4) RETURNING *;
+INSERT INTO writing_submissions(user_id,parent_id,prompt,essay,reference) VALUES($1,$2,$3,$4,$5) RETURNING *;
 
 -- name: ListWriting :many
 SELECT * FROM writing_submissions WHERE user_id=$1 ORDER BY updated_at DESC LIMIT 50;
@@ -18,8 +18,12 @@ SELECT * FROM writing_submissions WHERE user_id=$1 ORDER BY updated_at DESC LIMI
 SELECT * FROM writing_submissions WHERE user_id=$1 AND id=$2;
 
 -- name: SaveWriting :one
-UPDATE writing_submissions SET prompt=$3,essay=$4,revision=revision+1,updated_at=now()
+UPDATE writing_submissions SET prompt=$3,essay=$4,reference=$6,revision=revision+1,updated_at=now()
 WHERE user_id=$1 AND id=$2 AND revision=$5 AND status='draft' RETURNING *;
+
+-- name: GetPublishedWritingReference :one
+SELECT data FROM managed_content WHERE id=$1 AND kind='writing_prompt' AND status='published'
+AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>now());
 
 -- name: DeleteWriting :execrows
 DELETE FROM writing_submissions WHERE user_id=$1 AND id=$2 AND status NOT IN ('queued','processing');
