@@ -15,6 +15,7 @@ var ErrLimit = errors.New("daily limit reached: five evaluation requests per UTC
 var ErrUnavailable = errors.New("writing evaluation is temporarily unavailable; your draft can still be saved")
 
 type Submission struct {
+	Reference     json.RawMessage `json:"-"`
 	RunID         string          `json:"-"`
 	ID            string          `json:"id"`
 	ParentID      string          `json:"parent_id,omitempty"`
@@ -30,10 +31,21 @@ type Submission struct {
 	UpdatedAt     time.Time       `json:"updated_at"`
 }
 type Input struct {
-	Prompt   string `json:"prompt"`
-	Essay    string `json:"essay"`
-	ParentID string `json:"parent_id"`
-	Revision int32  `json:"revision"`
+	ContentID string `json:"content_id"`
+	Prompt    string `json:"prompt"`
+	Essay     string `json:"essay"`
+	ParentID  string `json:"parent_id"`
+	Revision  int32  `json:"revision"`
+}
+
+// Reference is a server-created snapshot, never accepted from student input.
+type Reference struct {
+	Task   string           `json:"task"`
+	Images []ReferenceImage `json:"images,omitempty"`
+}
+type ReferenceImage struct {
+	MIME string `json:"mime_type"`
+	Data []byte `json:"data"`
 }
 type Repository interface {
 	Create(context.Context, string, Input) (Submission, error)

@@ -391,6 +391,44 @@ func TestLearningIntegration(t *testing.T) {
 	}
 	essay := strings.Repeat("Public transport helps workers reach their jobs and saves road space. ", 25)
 	input := writingapp.Input{Prompt: "Should cities invest in public transport instead of roads?", Essay: essay}
+	// Task 1 evaluation must receive the same visual reference the student saw.
+	var referenceID string
+	referencePrompt := "Task 1: Describe the chart of library visits between 2000 and 2020."
+	referenceData, _ := json.Marshal(map[string]any{"task": "task_1", "prompt": referencePrompt, "source_image_urls": []string{mediaURL}})
+	if e = pool.QueryRow(context.Background(), "INSERT INTO managed_content(kind,slug,title,status,data) VALUES('writing_prompt','reference-qa','Reference QA','published',$1) RETURNING id::text", referenceData).Scan(&referenceID); e != nil {
+		t.Fatal(e)
+	}
+	referenceDraft, e := writingService.Create(context.Background(), student.ID, writingapp.Input{ContentID: referenceID, Prompt: referencePrompt, Essay: essay})
+	if e != nil {
+		t.Fatal("create referenced writing", e)
+	}
+	var snapshot writingapp.Reference
+	if json.Unmarshal(referenceDraft.Reference, &snapshot) != nil || snapshot.Task != "task_1" || len(snapshot.Images) != 1 || string(snapshot.Images[0].Data) != "integration media" {
+		t.Fatal("missing visual snapshot")
+	}
+	publicDraft, _ := json.Marshal(referenceDraft)
+	if bytes.Contains(publicDraft, []byte("mime_type")) || bytes.Contains(publicDraft, []byte("reference")) {
+		t.Fatal("internal reference leaked in response")
+	}
+	if _, e = writingService.Create(context.Background(), student.ID, writingapp.Input{ContentID: referenceID, Prompt: "A different prompt that should not match", Essay: essay}); !errors.Is(e, writingapp.ErrInvalid) {
+		t.Fatal("mismatched reference accepted", e)
+	}
+	if _, e = pool.Exec(context.Background(), "UPDATE managed_content SET status='archived' WHERE id=$1", referenceID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = writingService.Create(context.Background(), student.ID, writingapp.Input{ContentID: referenceID, Prompt: referencePrompt, Essay: essay}); !errors.Is(e, writingapp.ErrNotFound) {
+		t.Fatal("archived reference accepted", e)
+	}
+	referenceSaved, e := writingService.Save(context.Background(), student.ID, referenceDraft.ID, writingapp.Input{Prompt: referencePrompt, Essay: essay, Revision: referenceDraft.Revision})
+	if e != nil || !bytes.Equal(referenceSaved.Reference, referenceDraft.Reference) {
+		t.Fatal("existing snapshot lost after content archive", e)
+	}
+	if e = writingService.Repo.Delete(context.Background(), student.ID, referenceDraft.ID); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = pool.Exec(context.Background(), "DELETE FROM managed_content WHERE id=$1", referenceID); e != nil {
+		t.Fatal(e)
+	}
 	draft, e := writingService.Create(context.Background(), student.ID, input)
 	if e != nil {
 		t.Fatal(e)

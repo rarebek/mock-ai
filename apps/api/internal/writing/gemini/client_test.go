@@ -46,6 +46,36 @@ func TestStructuredRequestAndSafeErrors(t *testing.T) {
 	}
 }
 
+func TestTaskOneReferenceIsSentAsInlineImage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Contents []struct {
+				Parts []struct {
+					Text   string `json:"text"`
+					Inline struct {
+						MIME string `json:"mimeType"`
+						Data []byte `json:"data"`
+					} `json:"inlineData"`
+				} `json:"parts"`
+			} `json:"contents"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		parts := body.Contents[0].Parts
+		if len(parts) != 2 || !strings.Contains(parts[0].Text, "task_1") || parts[1].Inline.MIME != "image/png" || string(parts[1].Inline.Data) != "test image" {
+			t.Error("task or image missing from evaluation")
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"{}"}]}}]}`))
+	}))
+	defer server.Close()
+	reference, _ := json.Marshal(app.Reference{Task: "task_1", Images: []app.ReferenceImage{{MIME: "image/png", Data: []byte("test image")}}})
+	c := &Client{HTTP: server.Client(), Endpoint: server.URL + "/"}
+	if _, err := c.generate(context.Background(), "private-test-key", app.Submission{Reference: reference, Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Optional operator smoke test: synthetic essay only; never logs the key or report text.
 func TestLiveWriting(t *testing.T) {
 	key := os.Getenv("MOCKAI_LIVE_GEMINI_KEY")

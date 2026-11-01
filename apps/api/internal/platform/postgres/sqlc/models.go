@@ -798,4 +798,5 @@ type WritingSubmission struct {
 	LeaseUntil    pgtype.Timestamptz `json:"lease_until"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Reference     []byte             `json:"reference"`
 }

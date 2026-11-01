@@ -85,6 +85,7 @@ type Querier interface {
 	GetPrivateMedia(ctx context.Context, arg GetPrivateMediaParams) (GetPrivateMediaRow, error)
 	GetPrivateMediaForAdmin(ctx context.Context, id pgtype.UUID) (GetPrivateMediaForAdminRow, error)
 	GetPublishedExam(ctx context.Context, arg GetPublishedExamParams) (GetPublishedExamRow, error)
+	GetPublishedWritingReference(ctx context.Context, id pgtype.UUID) ([]byte, error)
 	GetQuestionTypePerformance(ctx context.Context, studentID pgtype.UUID) ([]GetQuestionTypePerformanceRow, error)
 	GetReminder(ctx context.Context, id pgtype.UUID) ([]byte, error)
 	GetSpeaking(ctx context.Context, arg GetSpeakingParams) (SpeakingSession, error)

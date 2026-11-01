@@ -59,8 +59,16 @@ func (c *Client) Evaluate(ctx context.Context, s app.Submission) ([]byte, error)
 	return c.generate(ctx, key, s)
 }
 func (c *Client) generate(ctx context.Context, key string, s app.Submission) ([]byte, error) {
-	data, _ := json.Marshal(map[string]string{"task_prompt": s.Prompt, "student_essay": s.Essay})
-	body, _ := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instruction}}}, "contents": []any{map[string]any{"role": "user", "parts": []any{map[string]string{"text": string(data)}}}}, "generationConfig": map[string]any{"responseMimeType": "application/json", "responseJsonSchema": schema(), "maxOutputTokens": 12288, "thinkingConfig": map[string]string{"thinkingLevel": "low"}}})
+	var reference app.Reference
+	if len(s.Reference) > 0 && json.Unmarshal(s.Reference, &reference) != nil {
+		return nil, errors.New("invalid writing reference")
+	}
+	data, _ := json.Marshal(map[string]string{"task_type": reference.Task, "task_prompt": s.Prompt, "student_essay": s.Essay})
+	parts := []any{map[string]string{"text": string(data)}}
+	for _, image := range reference.Images {
+		parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": image.MIME, "data": image.Data}})
+	}
+	body, _ := json.Marshal(map[string]any{"systemInstruction": map[string]any{"parts": []any{map[string]string{"text": instruction}}}, "contents": []any{map[string]any{"role": "user", "parts": parts}}, "generationConfig": map[string]any{"responseMimeType": "application/json", "responseJsonSchema": schema(), "maxOutputTokens": 12288, "thinkingConfig": map[string]string{"thinkingLevel": "low"}}})
 	req, e := http.NewRequestWithContext(ctx, "POST", c.Endpoint+url.PathEscape(s.Model)+":generateContent", bytes.NewReader(body))
 	if e != nil {
 		return nil, errors.New("invalid provider request")

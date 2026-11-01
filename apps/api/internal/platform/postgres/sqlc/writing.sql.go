@@ -14,7 +14,7 @@ import (
 const claimWriting = `-- name: ClaimWriting :one
 WITH next AS (SELECT id FROM writing_submissions WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
 UPDATE writing_submissions w SET status='processing',lease_until=now()+interval '3 minutes',updated_at=now()
-FROM next WHERE w.id=next.id RETURNING w.id, w.user_id, w.parent_id, w.prompt, w.essay, w.revision, w.run_id, w.status, w.report, w.model, w.rubric_version, w.error_code, w.lease_until, w.created_at, w.updated_at
+FROM next WHERE w.id=next.id RETURNING w.id, w.user_id, w.parent_id, w.prompt, w.essay, w.revision, w.run_id, w.status, w.report, w.model, w.rubric_version, w.error_code, w.lease_until, w.created_at, w.updated_at, w.reference
 `
 
 func (q *Queries) ClaimWriting(ctx context.Context) (WritingSubmission, error) {
@@ -36,6 +36,7 @@ func (q *Queries) ClaimWriting(ctx context.Context) (WritingSubmission, error) {
 		&i.LeaseUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reference,
 	)
 	return i, err
 }
@@ -53,14 +54,15 @@ func (q *Queries) CountWritingToday(ctx context.Context, userID pgtype.UUID) (in
 }
 
 const createWriting = `-- name: CreateWriting :one
-INSERT INTO writing_submissions(user_id,parent_id,prompt,essay) VALUES($1,$2,$3,$4) RETURNING id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at
+INSERT INTO writing_submissions(user_id,parent_id,prompt,essay,reference) VALUES($1,$2,$3,$4,$5) RETURNING id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at, reference
 `
 
 type CreateWritingParams struct {
-	UserID   pgtype.UUID `json:"user_id"`
-	ParentID pgtype.UUID `json:"parent_id"`
-	Prompt   string      `json:"prompt"`
-	Essay    string      `json:"essay"`
+	UserID    pgtype.UUID `json:"user_id"`
+	ParentID  pgtype.UUID `json:"parent_id"`
+	Prompt    string      `json:"prompt"`
+	Essay     string      `json:"essay"`
+	Reference []byte      `json:"reference"`
 }
 
 func (q *Queries) CreateWriting(ctx context.Context, arg CreateWritingParams) (WritingSubmission, error) {
@@ -69,6 +71,7 @@ func (q *Queries) CreateWriting(ctx context.Context, arg CreateWritingParams) (W
 		arg.ParentID,
 		arg.Prompt,
 		arg.Essay,
+		arg.Reference,
 	)
 	var i WritingSubmission
 	err := row.Scan(
@@ -87,6 +90,7 @@ func (q *Queries) CreateWriting(ctx context.Context, arg CreateWritingParams) (W
 		&i.LeaseUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reference,
 	)
 	return i, err
 }
@@ -156,8 +160,20 @@ func (q *Queries) GetPrimaryAIKey(ctx context.Context) ([]byte, error) {
 	return ciphertext, err
 }
 
+const getPublishedWritingReference = `-- name: GetPublishedWritingReference :one
+SELECT data FROM managed_content WHERE id=$1 AND kind='writing_prompt' AND status='published'
+AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>now())
+`
+
+func (q *Queries) GetPublishedWritingReference(ctx context.Context, id pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getPublishedWritingReference, id)
+	var data []byte
+	err := row.Scan(&data)
+	return data, err
+}
+
 const getWriting = `-- name: GetWriting :one
-SELECT id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at FROM writing_submissions WHERE user_id=$1 AND id=$2
+SELECT id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at, reference FROM writing_submissions WHERE user_id=$1 AND id=$2
 `
 
 type GetWritingParams struct {
@@ -184,6 +200,7 @@ func (q *Queries) GetWriting(ctx context.Context, arg GetWritingParams) (Writing
 		&i.LeaseUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reference,
 	)
 	return i, err
 }
@@ -204,7 +221,7 @@ func (q *Queries) ImportAIKey(ctx context.Context, arg ImportAIKeyParams) error 
 }
 
 const listWriting = `-- name: ListWriting :many
-SELECT id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at FROM writing_submissions WHERE user_id=$1 ORDER BY updated_at DESC LIMIT 50
+SELECT id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at, reference FROM writing_submissions WHERE user_id=$1 ORDER BY updated_at DESC LIMIT 50
 `
 
 func (q *Queries) ListWriting(ctx context.Context, userID pgtype.UUID) ([]WritingSubmission, error) {
@@ -232,6 +249,7 @@ func (q *Queries) ListWriting(ctx context.Context, userID pgtype.UUID) ([]Writin
 			&i.LeaseUntil,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Reference,
 		); err != nil {
 			return nil, err
 		}
@@ -254,7 +272,7 @@ func (q *Queries) LockWritingUser(ctx context.Context, userID string) error {
 
 const queueWriting = `-- name: QueueWriting :one
 UPDATE writing_submissions SET status='queued',model=$3,rubric_version=$4,error_code='',run_id=gen_random_uuid(),updated_at=now()
-WHERE user_id=$1 AND id=$2 AND revision=$5 AND status IN ('draft','failed') RETURNING id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at
+WHERE user_id=$1 AND id=$2 AND revision=$5 AND status IN ('draft','failed') RETURNING id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at, reference
 `
 
 type QueueWritingParams struct {
@@ -290,6 +308,7 @@ func (q *Queries) QueueWriting(ctx context.Context, arg QueueWritingParams) (Wri
 		&i.LeaseUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reference,
 	)
 	return i, err
 }
@@ -309,16 +328,17 @@ func (q *Queries) RecordWritingRequest(ctx context.Context, arg RecordWritingReq
 }
 
 const saveWriting = `-- name: SaveWriting :one
-UPDATE writing_submissions SET prompt=$3,essay=$4,revision=revision+1,updated_at=now()
-WHERE user_id=$1 AND id=$2 AND revision=$5 AND status='draft' RETURNING id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at
+UPDATE writing_submissions SET prompt=$3,essay=$4,reference=$6,revision=revision+1,updated_at=now()
+WHERE user_id=$1 AND id=$2 AND revision=$5 AND status='draft' RETURNING id, user_id, parent_id, prompt, essay, revision, run_id, status, report, model, rubric_version, error_code, lease_until, created_at, updated_at, reference
 `
 
 type SaveWritingParams struct {
-	UserID   pgtype.UUID `json:"user_id"`
-	ID       pgtype.UUID `json:"id"`
-	Prompt   string      `json:"prompt"`
-	Essay    string      `json:"essay"`
-	Revision int32       `json:"revision"`
+	UserID    pgtype.UUID `json:"user_id"`
+	ID        pgtype.UUID `json:"id"`
+	Prompt    string      `json:"prompt"`
+	Essay     string      `json:"essay"`
+	Revision  int32       `json:"revision"`
+	Reference []byte      `json:"reference"`
 }
 
 func (q *Queries) SaveWriting(ctx context.Context, arg SaveWritingParams) (WritingSubmission, error) {
@@ -328,6 +348,7 @@ func (q *Queries) SaveWriting(ctx context.Context, arg SaveWritingParams) (Writi
 		arg.Prompt,
 		arg.Essay,
 		arg.Revision,
+		arg.Reference,
 	)
 	var i WritingSubmission
 	err := row.Scan(
@@ -346,6 +367,7 @@ func (q *Queries) SaveWriting(ctx context.Context, arg SaveWritingParams) (Writi
 		&i.LeaseUntil,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Reference,
 	)
 	return i, err
 }
