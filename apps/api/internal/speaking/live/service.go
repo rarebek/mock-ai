@@ -143,6 +143,19 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 	// interview deadlocked. Measured loudness is the reliable signal.
 	voicedMs := 0
 	clearVoicing := func() { voicedMs, peak, loudChunks = 0, 0, 0 }
+	// How long a student may stay quiet after speaking before the examiner is
+	// asked to decide. The Part 2 long turn is built out of pauses, so it gets
+	// far more room than Parts 1 and 3.
+	settleFor := func() time.Duration {
+		settle := s.Settle
+		if settle <= 0 {
+			settle = 3 * time.Second
+		}
+		if session.Turns[pos].Part == 2 {
+			settle = settle * 7 / 3
+		}
+		return settle
+	}
 	spokenQuestion := func() string {
 		if helpSpeech != "" {
 			return helpSpeech
@@ -236,19 +249,9 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					"voiced_ms", voicedMs,
 					"transcript_chars", len(strings.TrimSpace(transcript[helpStart:])))
 			}
-			// Substantive enough to be a finished answer rather than a pause: two
-			// seconds of speech, or a transcript with real words in it. Either is
-			// sufficient; requiring both is what stalled the interview.
-			answered := voicedMs >= 2000 || Meaningful(transcript[helpStart:])
+			answered := voicedMs >= answerSpeechMs || Meaningful(transcript[helpStart:])
 			if phase == "listening" && !lastVoiceAt.IsZero() && nudges < 2 && answered {
-				settle := s.Settle
-				if settle <= 0 {
-					settle = 3 * time.Second
-				}
-				if session.Turns[pos].Part == 2 {
-					// The Part 2 long turn is built out of pauses; it gets far more room.
-					settle = settle * 7 / 3
-				}
+				settle := settleFor()
 				quiet := time.Since(lastVoiceAt)
 				since := time.Since(nudgedAt)
 				if nudges > 0 {
@@ -631,7 +634,7 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 						// question. Accept it when either the text or the measured
 						// speech shows the student spoke; ValidateAudio below is still
 						// the hard gate on what gets saved.
-						valid := Meaningful(transcript[helpStart:]) || voicedMs >= 2000
+						valid := Meaningful(transcript[helpStart:]) || voicedMs >= answerSpeechMs
 						refusal := ""
 						if !valid {
 							refusal = "too_short"
@@ -708,16 +711,33 @@ func (s *Service) Run(parent context.Context, client *websocket.Conn, session d.
 					return e
 				}
 			}
-			// Output is disabled while the student holds the turn, so anything the
-			// model says then is deliberately discarded. That silence hid a real
-			// deadlock for days: the examiner was speaking and nobody could tell.
-			if !allowOutput && s.Log != nil {
-				for _, part := range content.ModelTurn.Parts {
-					if part.InlineData != nil && part.InlineData.Data != "" {
-						s.Log.Warn("live speaking examiner audio discarded", "session_id", session.ID, "position", pos, "phase", phase)
-						break
-					}
+			// Output is disabled while the student holds the turn. The model can
+			// still choose to speak then, and discarding that unconditionally is
+			// what left a student in silence after a brief answer: it had called
+			// wait_for_student, then tried to ask them to say a little more, and
+			// six chunks of that went in the bin while both sides waited.
+			//
+			// The rule protects a student who is mid-thought, not one who has
+			// already gone quiet. Once they have spoken and then fallen silent for
+			// as long as the nudge ladder waits, the examiner gets the turn.
+			speaking := false
+			for _, part := range content.ModelTurn.Parts {
+				if part.InlineData != nil && part.InlineData.Data != "" {
+					speaking = true
+					break
 				}
+			}
+			if speaking && !allowOutput && phase == "listening" && !lastVoiceAt.IsZero() && time.Since(lastVoiceAt) >= settleFor() {
+				allowOutput = true
+				outputBytes, outputRetries = 0, 0
+				phase = "examiner"
+				if e = state(); e != nil {
+					return e
+				}
+			}
+			if speaking && !allowOutput && s.Log != nil {
+				s.Log.Warn("live speaking examiner audio discarded", "session_id", session.ID, "position", pos,
+					"phase", phase, "quiet_ms", quietSince(lastVoiceAt))
 			}
 			if allowOutput {
 				for _, part := range content.ModelTurn.Parts {

@@ -837,11 +837,12 @@ func TestLiveRefusedAdvanceIsStillSpokenToTheStudent(t *testing.T) {
 	if read(client)["phase"] != "listening" {
 		t.Fatal("not listening")
 	}
-	// Audible, long enough for the recording to validate, but under the two
-	// seconds of speech that count as a finished answer — so the advance is
-	// refused and the examiner is told to invite a little more.
+	// Half a second of speech inside a second and a half of recording: long
+	// enough to validate, well under the speech that counts as a finished
+	// answer, so the advance is refused and the examiner is told to invite a
+	// little more.
 	tone := make([]byte, 48000)
-	for i := 0; i+1 < len(tone); i += 2 {
+	for i := 0; i+1 < 16000; i += 2 {
 		v := int16(9000)
 		if (i/2)%40 < 20 {
 			v = -9000
@@ -901,6 +902,133 @@ func TestLiveRefusedAdvanceIsStillSpokenToTheStudent(t *testing.T) {
 		}
 		if kind == websocket.MessageBinary {
 			return
+		}
+	}
+}
+
+// The examiner called wait_for_student after a brief answer and then tried to
+// ask for a little more. Output is disabled while the student holds the turn,
+// so six chunks of that reply were discarded and both sides waited for each
+// other. Once the student has spoken and gone quiet, the examiner gets heard.
+func TestLiveExaminerIsHeardOnceTheStudentHasGoneQuiet(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	upstream := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, e := websocket.Accept(w, r, nil)
+		if e != nil {
+			return
+		}
+		upstream <- c
+		<-ctx.Done()
+		c.CloseNow()
+	}))
+	defer func() { cancel(); server.Close() }()
+	topic, turns, _ := d.NewPlan()
+	session := d.Session{ID: "session", UserID: "user", LiveModel: "test", Turns: turns, Topic: topic}
+	repo := &testRepo{saves: make(chan saved, 4), released: make(chan bool, 1)}
+	service := Service{Repo: repo, Provider: testProvider{strings.Replace(server.URL, "http", "ws", 1)}, Settle: 300 * time.Millisecond}
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, e := websocket.Accept(w, r, nil)
+		if e != nil {
+			return
+		}
+		defer c.CloseNow()
+		_ = service.Run(ctx, c, session)
+	}))
+	defer func() { cancel(); app.Close() }()
+	client, _, e := websocket.Dial(ctx, strings.Replace(app.URL, "http", "ws", 1), nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer client.CloseNow()
+	provider := <-upstream
+	read := func(c *websocket.Conn) map[string]any {
+		t.Helper()
+		_, b, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v map[string]any
+		_ = json.Unmarshal(b, &v)
+		return v
+	}
+	send := func(c *websocket.Conn, v any) {
+		t.Helper()
+		if err := write(ctx, c, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	audio := func() any {
+		return map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]string{"data": base64.StdEncoding.EncodeToString(make([]byte, 4800)), "mimeType": "audio/pcm;rate=24000"}}}}}}
+	}
+	read(provider)
+	send(provider, map[string]any{"setupComplete": map[string]any{}})
+	read(client)
+	read(provider)
+	send(provider, map[string]any{"serverContent": map[string]bool{"turnComplete": true}})
+	if read(provider)["clientContent"] == nil {
+		t.Fatal("missing empty-audio retry")
+	}
+	send(provider, map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]string{"data": base64.StdEncoding.EncodeToString(make([]byte, 4800)), "mimeType": "audio/pcm;rate=24000"}}}}, "turnComplete": true}})
+	if kind, _, err := client.Read(ctx); err != nil || kind != websocket.MessageBinary {
+		t.Fatal("examiner audio missing", err)
+	}
+	read(client)
+	send(client, map[string]string{"type": "playback_done"})
+	if read(client)["phase"] != "listening" {
+		t.Fatal("not listening")
+	}
+	tone := make([]byte, 32000)
+	for i := 0; i+1 < len(tone); i += 2 {
+		v := int16(9000)
+		if (i/2)%40 < 20 {
+			v = -9000
+		}
+		binary.LittleEndian.PutUint16(tone[i:], uint16(v))
+	}
+	for off := 0; off < len(tone); off += 4096 {
+		end := off + 4096
+		if end > len(tone) {
+			end = len(tone)
+		}
+		if err := client.Write(ctx, websocket.MessageBinary, tone[off:end]); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	send(provider, map[string]any{"serverContent": map[string]any{"inputTranscription": map[string]string{"text": "I work."}}})
+	// Mid-thought: the student's own pause must not hand the turn away.
+	send(provider, audio())
+	drained := make(chan websocket.MessageType, 8)
+	go func() {
+		for {
+			kind, _, err := client.Read(ctx)
+			if err != nil {
+				return
+			}
+			drained <- kind
+		}
+	}()
+	select {
+	case kind := <-drained:
+		if kind == websocket.MessageBinary {
+			t.Fatal("the examiner was let in while the student had only just stopped speaking")
+		}
+	case <-time.After(200 * time.Millisecond):
+	}
+	// Now they have been quiet for longer than the examiner is asked to wait.
+	time.Sleep(500 * time.Millisecond)
+	send(provider, audio())
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case kind := <-drained:
+			if kind == websocket.MessageBinary {
+				return
+			}
+		case <-deadline:
+			t.Fatal("the examiner's reply never reached the student")
 		}
 	}
 }
