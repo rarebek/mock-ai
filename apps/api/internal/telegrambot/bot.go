@@ -21,15 +21,17 @@ const telegramAPI = "https://api.telegram.org"
 
 type UserStore interface {
 	EnsureTelegramUser(ctx context.Context, user telegram.User, rawProfile []byte) (domain.User, bool, error)
+	IssueLoginLink(ctx context.Context, userID string) (string, time.Time, error)
 }
 
 type Bot struct {
-	token      string
-	miniAppURL string
-	users      UserStore
-	logger     *slog.Logger
-	client     *http.Client
-	apiBase    string
+	token       string
+	miniAppURL  string
+	loginOrigin string
+	users       UserStore
+	logger      *slog.Logger
+	client      *http.Client
+	apiBase     string
 }
 
 type update struct {
@@ -55,7 +57,7 @@ type apiResponse struct {
 	Description string          `json:"description"`
 }
 
-func New(token, miniAppURL string, users UserStore, logger *slog.Logger) (*Bot, error) {
+func New(token, miniAppURL, loginOrigin string, users UserStore, logger *slog.Logger) (*Bot, error) {
 	if token == "" {
 		return nil, nil
 	}
@@ -70,12 +72,13 @@ func New(token, miniAppURL string, users UserStore, logger *slog.Logger) (*Bot, 
 		logger = slog.Default()
 	}
 	return &Bot{
-		token:      token,
-		miniAppURL: strings.TrimRight(miniAppURL, "/"),
-		users:      users,
-		logger:     logger,
-		client:     &http.Client{Timeout: 60 * time.Second},
-		apiBase:    telegramAPI,
+		token:       token,
+		miniAppURL:  strings.TrimRight(miniAppURL, "/"),
+		loginOrigin: strings.TrimRight(loginOrigin, "/"),
+		users:       users,
+		logger:      logger,
+		client:      &http.Client{Timeout: 60 * time.Second},
+		apiBase:     telegramAPI,
 	}, nil
 }
 
@@ -86,9 +89,9 @@ func (b *Bot) Run(ctx context.Context) {
 		return
 	}
 	for method, payload := range map[string]any{
-		"setMyCommands": map[string]any{"commands": []map[string]string{{"command": "start", "description": "Open MockAI"}}},
+		"setMyCommands": map[string]any{"commands": []map[string]string{{"command": "start", "description": "Open mock-ai and get a login link"}}},
 		"setMyDescription": map[string]string{
-			"description": "IELTS Reading and Listening mock exams, practice, reviews, and progress tracking.",
+			"description": "IELTS mock exams and practice across Reading, Listening, Writing and Speaking, with AI feedback and progress tracking.",
 		},
 		"setChatMenuButton": map[string]any{"menu_button": b.menuButton()},
 	} {
@@ -151,20 +154,45 @@ func (b *Bot) handle(ctx context.Context, item update) error {
 	if name == "" {
 		name = user.DisplayName
 	}
-	text := fmt.Sprintf("Hello, %s! 👋\n\nWelcome back to MockAI. Continue your IELTS Reading and Listening practice when you're ready.", name)
+	// Receiving a private message from this account is the proof of identity,
+	// so the link below is the whole login. Failing to mint one must not cost
+	// the student the welcome message or the mini app button.
+	loginURL := ""
+	if b.loginOrigin != "" {
+		token, _, err := b.users.IssueLoginLink(ctx, user.ID)
+		if err != nil {
+			b.logger.Warn("issue Telegram login link", "error", err)
+		} else {
+			loginURL = b.loginOrigin + "/api/v1/auth/telegram/link?token=" + url.QueryEscape(token)
+		}
+	}
+	text := fmt.Sprintf("Hello, %s! 👋\n\nWelcome back to mock-ai. Continue your IELTS practice when you're ready.", name)
 	if created {
-		text = fmt.Sprintf("Welcome to MockAI, %s! 👋\n\nYour student profile is ready. Practice IELTS Reading and Listening, take mock exams, and track your progress.", name)
+		text = fmt.Sprintf("Welcome to mock-ai, %s! 👋\n\nYour student profile is ready. Practice IELTS Reading, Listening, Writing and Speaking, take mock exams, and track your progress.", name)
 	}
 	return b.call(ctx, "sendMessage", map[string]any{
-		"chat_id": item.Message.Chat.ID,
-		"text":    text,
-		"reply_markup": map[string]any{
-			"inline_keyboard": [][]any{{map[string]any{
-				"text":    "Open MockAI",
-				"web_app": map[string]string{"url": b.miniAppURL},
-			}}},
-		},
+		"chat_id":      item.Message.Chat.ID,
+		"text":         text,
+		"reply_markup": map[string]any{"inline_keyboard": b.keyboard(loginURL)},
 	}, nil)
+}
+
+// keyboard offers the mini app first, since staying inside Telegram is the
+// shortest path, and the browser login underneath for students who want the
+// full-size app. The login row is omitted rather than shown broken when no
+// token could be minted.
+func (b *Bot) keyboard(loginURL string) [][]any {
+	rows := [][]any{{map[string]any{
+		"text":    "Open mock-ai",
+		"web_app": map[string]string{"url": b.miniAppURL},
+	}}}
+	if loginURL != "" {
+		rows = append(rows, []any{map[string]any{
+			"text": "Log in in your browser",
+			"url":  loginURL,
+		}})
+	}
+	return rows
 }
 
 func (b *Bot) menuButton() map[string]any {

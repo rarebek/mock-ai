@@ -31,24 +31,6 @@ INSERT INTO user_identities (
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
--- name: CreatePasswordCredential :exec
-INSERT INTO password_credentials (user_id, password_hash)
-VALUES ($1, $2);
-
--- name: GetPasswordLogin :one
-SELECT
-    u.id,
-    u.display_name,
-    u.avatar_url,
-    u.email,
-    u.email_verified_at,
-    u.created_at,
-    p.password_hash
-FROM users u
-JOIN password_credentials p ON p.user_id = u.id
-WHERE lower(u.email) = lower($1)
-  AND u.deleted_at IS NULL;
-
 -- name: AssignUserRole :exec
 INSERT INTO user_role_assignments (user_id, role)
 VALUES ($1, $2)
@@ -115,3 +97,17 @@ WHERE token_hash = $1
 UPDATE sessions
 SET revoked_at = now()
 WHERE token_hash = $1 AND revoked_at IS NULL;
+
+-- name: CreateLoginLink :one
+INSERT INTO telegram_login_links (user_id, token_hash, expires_at)
+VALUES ($1, $2, $3)
+RETURNING id;
+
+-- name: CountRecentLoginLinks :one
+SELECT count(*) FROM telegram_login_links
+WHERE user_id = $1 AND created_at > $2;
+
+-- name: ConsumeLoginLink :one
+UPDATE telegram_login_links SET consumed_at = now()
+WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+RETURNING user_id;

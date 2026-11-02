@@ -7,28 +7,26 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/mail"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/own/mock-ai/apps/api/internal/identity/domain"
-	"github.com/own/mock-ai/apps/api/internal/identity/password"
 	identitypostgres "github.com/own/mock-ai/apps/api/internal/identity/postgres"
 	"github.com/own/mock-ai/apps/api/internal/identity/telegram"
 )
 
 var (
-	ErrInvalidInput       = errors.New("invalid input")
-	ErrInvalidCredentials = errors.New("invalid email or password")
-	ErrEmailTaken         = errors.New("email is already registered")
-	ErrInvalidSession     = errors.New("invalid or expired session")
-	ErrTelegramDisabled   = errors.New("Telegram authentication is not configured")
+	ErrInvalidInput      = errors.New("invalid input")
+	ErrInvalidSession    = errors.New("invalid or expired session")
+	ErrTelegramDisabled  = errors.New("Telegram authentication is not configured")
+	ErrInvalidLoginLink  = errors.New("this login link has expired or has already been used")
+	ErrTooManyLoginLinks = errors.New("too many login links requested; try again later")
 )
 
 type Repository interface {
-	RegisterEmail(ctx context.Context, name, email, passwordHash string) (domain.User, error)
-	PasswordLogin(ctx context.Context, email string) (domain.User, string, error)
+	IssueLoginLink(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time) error
+	RecentLoginLinks(ctx context.Context, userID string, since time.Time) (int64, error)
+	ConsumeLoginLink(ctx context.Context, tokenHash []byte) (domain.User, error)
 	FindOrCreateExternal(ctx context.Context, profile domain.ExternalProfile) (domain.User, bool, error)
 	CreateSession(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time, userAgent, ipAddress string) error
 	UserBySession(ctx context.Context, tokenHash []byte) (domain.User, error)
@@ -45,66 +43,66 @@ type Service struct {
 	telegramValidator *telegram.Validator
 	telegramEnabled   bool
 	sessionTTL        time.Duration
-	dummyPasswordHash string
 }
 
 func NewService(repository Repository, telegramBotToken string, sessionTTL time.Duration) (*Service, error) {
-	dummyHash, err := password.Hash("not-a-real-user-password")
-	if err != nil {
-		return nil, err
-	}
 	return &Service{
 		repository:        repository,
 		telegramValidator: telegram.NewValidator(telegramBotToken, 10*time.Minute),
 		telegramEnabled:   telegramBotToken != "",
 		sessionTTL:        sessionTTL,
-		dummyPasswordHash: dummyHash,
 	}, nil
 }
 
-func (s *Service) Register(ctx context.Context, name, email, plainPassword, userAgent, ipAddress string) (domain.User, Session, error) {
-	name = strings.TrimSpace(name)
-	email, err := normalizeEmail(email)
-	if err != nil || utf8.RuneCountInString(name) < 2 || utf8.RuneCountInString(name) > 100 {
-		return domain.User{}, Session{}, fmt.Errorf("%w: provide a valid name and email", ErrInvalidInput)
+// loginLinkTTL is how long a link the bot sends stays usable. Long enough to
+// walk from Telegram to a browser, short enough that a link left in a chat
+// history is not a standing key to the account.
+const loginLinkTTL = 15 * time.Minute
+
+// loginLinkBurst caps how many links one account can mint in an hour, so
+// hammering /start cannot fill the table or paper a chat with live tokens.
+const loginLinkBurst = 10
+
+// IssueLoginLink mints a one-time login token for a user. The caller is the
+// Telegram bot, which has already proved the account by receiving a private
+// message from it; the raw token is returned once and never stored.
+func (s *Service) IssueLoginLink(ctx context.Context, userID string) (string, time.Time, error) {
+	if !s.telegramEnabled {
+		return "", time.Time{}, ErrTelegramDisabled
 	}
-	if len(plainPassword) < 10 || len(plainPassword) > 128 {
-		return domain.User{}, Session{}, fmt.Errorf("%w: password must be between 10 and 128 characters", ErrInvalidInput)
-	}
-	passwordHash, err := password.Hash(plainPassword)
+	recent, err := s.repository.RecentLoginLinks(ctx, userID, time.Now().Add(-time.Hour))
 	if err != nil {
-		return domain.User{}, Session{}, fmt.Errorf("hash password: %w", err)
+		return "", time.Time{}, err
 	}
-	user, err := s.repository.RegisterEmail(ctx, name, email, passwordHash)
-	if errors.Is(err, identitypostgres.ErrConflict) {
-		return domain.User{}, Session{}, ErrEmailTaken
+	if recent >= loginLinkBurst {
+		return "", time.Time{}, ErrTooManyLoginLinks
 	}
-	if err != nil {
-		return domain.User{}, Session{}, err
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", time.Time{}, fmt.Errorf("generate login token: %w", err)
 	}
-	session, err := s.newSession(ctx, user.ID, userAgent, ipAddress)
-	return user, session, err
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	hash := sha256.Sum256([]byte(token))
+	expiresAt := time.Now().Add(loginLinkTTL)
+	if err := s.repository.IssueLoginLink(ctx, userID, hash[:], expiresAt); err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expiresAt, nil
 }
 
-func (s *Service) Login(ctx context.Context, email, plainPassword, userAgent, ipAddress string) (domain.User, Session, error) {
-	email, err := normalizeEmail(email)
-	if err != nil || plainPassword == "" {
-		return domain.User{}, Session{}, ErrInvalidCredentials
+// LoginWithLink spends a login token and starts a session. Spending is atomic
+// in the database, so a link that is tapped twice only ever logs in once.
+func (s *Service) LoginWithLink(ctx context.Context, token, userAgent, ipAddress string) (domain.User, Session, error) {
+	hash, err := tokenHash(token)
+	if err != nil {
+		return domain.User{}, Session{}, ErrInvalidLoginLink
 	}
-	user, encodedHash, err := s.repository.PasswordLogin(ctx, email)
+	user, err := s.repository.ConsumeLoginLink(ctx, hash)
 	if errors.Is(err, identitypostgres.ErrNotFound) {
-		_, _ = password.Verify(plainPassword, s.dummyPasswordHash)
-		return domain.User{}, Session{}, ErrInvalidCredentials
+		return domain.User{}, Session{}, ErrInvalidLoginLink
 	}
 	if err != nil {
 		return domain.User{}, Session{}, err
-	}
-	valid, err := password.Verify(plainPassword, encodedHash)
-	if err != nil {
-		return domain.User{}, Session{}, fmt.Errorf("verify password: %w", err)
-	}
-	if !valid {
-		return domain.User{}, Session{}, ErrInvalidCredentials
 	}
 	session, err := s.newSession(ctx, user.ID, userAgent, ipAddress)
 	return user, session, err
@@ -204,16 +202,4 @@ func tokenHash(token string) ([]byte, error) {
 	}
 	hash := sha256.Sum256([]byte(token))
 	return hash[:], nil
-}
-
-func normalizeEmail(value string) (string, error) {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if len(value) > 254 {
-		return "", ErrInvalidInput
-	}
-	parsed, err := mail.ParseAddress(value)
-	if err != nil || parsed.Address != value || !strings.Contains(value, "@") {
-		return "", ErrInvalidInput
-	}
-	return value, nil
 }

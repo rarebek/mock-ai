@@ -89,7 +89,7 @@ func main() {
 	if provider, ok := speakingProvider.(speakinglive.Provider); ok {
 		speakingHandler.Live = &speakinglive.Service{Repo: speakingService.Repo.(*speakingpg.Repository), Provider: provider, Model: cfg.GeminiSpeakingLiveModel, Log: logger}
 	}
-	bot, err := telegrambot.New(cfg.TelegramBotToken, cfg.TelegramMiniAppURL, identityService, logger)
+	bot, err := telegrambot.New(cfg.TelegramBotToken, cfg.TelegramMiniAppURL, cfg.WebOrigin, identityService, logger)
 	if err != nil {
 		logger.Error("initialize Telegram bot", "error", err)
 		os.Exit(1)

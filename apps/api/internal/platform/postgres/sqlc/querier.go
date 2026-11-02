@@ -28,6 +28,8 @@ type Querier interface {
 	CompleteAttempt(ctx context.Context, arg CompleteAttemptParams) (Attempt, error)
 	CompleteContentImport(ctx context.Context, arg CompleteContentImportParams) error
 	CompleteSpeakingEvaluation(ctx context.Context, arg CompleteSpeakingEvaluationParams) (int64, error)
+	ConsumeLoginLink(ctx context.Context, tokenHash []byte) (pgtype.UUID, error)
+	CountRecentLoginLinks(ctx context.Context, arg CountRecentLoginLinksParams) (int64, error)
 	CountSpeakingRequests(ctx context.Context, arg CountSpeakingRequestsParams) (int32, error)
 	CountWritingToday(ctx context.Context, userID pgtype.UUID) (int32, error)
 	CreateAdmin(ctx context.Context, arg CreateAdminParams) (pgtype.UUID, error)
@@ -42,8 +44,8 @@ type Querier interface {
 	CreateContentQuestion(ctx context.Context, arg CreateContentQuestionParams) (pgtype.UUID, error)
 	CreateContentSection(ctx context.Context, arg CreateContentSectionParams) (pgtype.UUID, error)
 	CreateIdentity(ctx context.Context, arg CreateIdentityParams) (UserIdentity, error)
+	CreateLoginLink(ctx context.Context, arg CreateLoginLinkParams) (pgtype.UUID, error)
 	CreateManagedContent(ctx context.Context, arg CreateManagedContentParams) (ManagedContent, error)
-	CreatePasswordCredential(ctx context.Context, arg CreatePasswordCredentialParams) error
 	CreatePrivateMedia(ctx context.Context, arg CreatePrivateMediaParams) (pgtype.UUID, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateSpeaking(ctx context.Context, arg CreateSpeakingParams) (SpeakingSession, error)
@@ -79,7 +81,6 @@ type Querier interface {
 	GetCommunityProfile(ctx context.Context, id pgtype.UUID) (GetCommunityProfileRow, error)
 	GetCommunityStats(ctx context.Context, userID pgtype.UUID) (GetCommunityStatsRow, error)
 	GetOwnedMistakeKey(ctx context.Context, arg GetOwnedMistakeKeyParams) ([]GetOwnedMistakeKeyRow, error)
-	GetPasswordLogin(ctx context.Context, lower string) (GetPasswordLoginRow, error)
 	GetPracticeAnswerKey(ctx context.Context, arg GetPracticeAnswerKeyParams) ([]GetPracticeAnswerKeyRow, error)
 	GetPrimaryAIKey(ctx context.Context) ([]byte, error)
 	GetPrivateMedia(ctx context.Context, arg GetPrivateMediaParams) (GetPrivateMediaRow, error)

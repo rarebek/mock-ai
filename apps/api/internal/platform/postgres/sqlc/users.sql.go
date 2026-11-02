@@ -27,6 +27,36 @@ func (q *Queries) AssignUserRole(ctx context.Context, arg AssignUserRoleParams) 
 	return err
 }
 
+const consumeLoginLink = `-- name: ConsumeLoginLink :one
+UPDATE telegram_login_links SET consumed_at = now()
+WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+RETURNING user_id
+`
+
+func (q *Queries) ConsumeLoginLink(ctx context.Context, tokenHash []byte) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, consumeLoginLink, tokenHash)
+	var user_id pgtype.UUID
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
+const countRecentLoginLinks = `-- name: CountRecentLoginLinks :one
+SELECT count(*) FROM telegram_login_links
+WHERE user_id = $1 AND created_at > $2
+`
+
+type CountRecentLoginLinksParams struct {
+	UserID    pgtype.UUID        `json:"user_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) CountRecentLoginLinks(ctx context.Context, arg CountRecentLoginLinksParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentLoginLinks, arg.UserID, arg.CreatedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createIdentity = `-- name: CreateIdentity :one
 INSERT INTO user_identities (
     user_id, provider, provider_subject, provider_email, profile
@@ -65,19 +95,23 @@ func (q *Queries) CreateIdentity(ctx context.Context, arg CreateIdentityParams) 
 	return i, err
 }
 
-const createPasswordCredential = `-- name: CreatePasswordCredential :exec
-INSERT INTO password_credentials (user_id, password_hash)
-VALUES ($1, $2)
+const createLoginLink = `-- name: CreateLoginLink :one
+INSERT INTO telegram_login_links (user_id, token_hash, expires_at)
+VALUES ($1, $2, $3)
+RETURNING id
 `
 
-type CreatePasswordCredentialParams struct {
-	UserID       pgtype.UUID `json:"user_id"`
-	PasswordHash string      `json:"password_hash"`
+type CreateLoginLinkParams struct {
+	UserID    pgtype.UUID        `json:"user_id"`
+	TokenHash []byte             `json:"token_hash"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
-func (q *Queries) CreatePasswordCredential(ctx context.Context, arg CreatePasswordCredentialParams) error {
-	_, err := q.db.Exec(ctx, createPasswordCredential, arg.UserID, arg.PasswordHash)
-	return err
+func (q *Queries) CreateLoginLink(ctx context.Context, arg CreateLoginLinkParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, createLoginLink, arg.UserID, arg.TokenHash, arg.ExpiresAt)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const createSession = `-- name: CreateSession :one
@@ -177,46 +211,6 @@ func (q *Queries) CreateVerifiedUser(ctx context.Context, arg CreateVerifiedUser
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
-	)
-	return i, err
-}
-
-const getPasswordLogin = `-- name: GetPasswordLogin :one
-SELECT
-    u.id,
-    u.display_name,
-    u.avatar_url,
-    u.email,
-    u.email_verified_at,
-    u.created_at,
-    p.password_hash
-FROM users u
-JOIN password_credentials p ON p.user_id = u.id
-WHERE lower(u.email) = lower($1)
-  AND u.deleted_at IS NULL
-`
-
-type GetPasswordLoginRow struct {
-	ID              pgtype.UUID        `json:"id"`
-	DisplayName     string             `json:"display_name"`
-	AvatarUrl       pgtype.Text        `json:"avatar_url"`
-	Email           pgtype.Text        `json:"email"`
-	EmailVerifiedAt pgtype.Timestamptz `json:"email_verified_at"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	PasswordHash    string             `json:"password_hash"`
-}
-
-func (q *Queries) GetPasswordLogin(ctx context.Context, lower string) (GetPasswordLoginRow, error) {
-	row := q.db.QueryRow(ctx, getPasswordLogin, lower)
-	var i GetPasswordLoginRow
-	err := row.Scan(
-		&i.ID,
-		&i.DisplayName,
-		&i.AvatarUrl,
-		&i.Email,
-		&i.EmailVerifiedAt,
-		&i.CreatedAt,
-		&i.PasswordHash,
 	)
 	return i, err
 }

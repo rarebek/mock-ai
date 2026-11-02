@@ -3,8 +3,12 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/own/mock-ai/apps/api/internal/platform/keyvault"
 	speakingapp "github.com/own/mock-ai/apps/api/internal/speaking/application"
 	speakinghttp "github.com/own/mock-ai/apps/api/internal/speaking/httpapi"
@@ -19,6 +23,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +43,7 @@ import (
 	examhttp "github.com/own/mock-ai/apps/api/internal/exam/httpapi"
 	exampg "github.com/own/mock-ai/apps/api/internal/exam/postgres"
 	"github.com/own/mock-ai/apps/api/internal/identity"
+	identitydomain "github.com/own/mock-ai/apps/api/internal/identity/domain"
 	"github.com/own/mock-ai/apps/api/internal/identity/googleauth"
 	authhttp "github.com/own/mock-ai/apps/api/internal/identity/httpapi"
 	authpg "github.com/own/mock-ai/apps/api/internal/identity/postgres"
@@ -109,14 +116,83 @@ func TestLearningIntegration(t *testing.T) {
 		}
 		return out
 	}
-	student, session, e := auth.Register(context.Background(), "Learning QA", "learning@example.com", "long-test-password", "", "")
+	// Sign-in is Telegram-only, so the test signs Mini App init data with the
+	// same bot token the service above was given. The server then verifies it
+	// with exactly the HMAC it verifies in production.
+	signIn := func(id int64, name string) (identitydomain.User, identity.Session) {
+		t.Helper()
+		user, session, err := auth.LoginTelegram(context.Background(), signedInitData("test-token", id, name), "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return user, session
+	}
+	// Telegram login links: the bot mints one per /start, and redeeming it is
+	// the whole sign-in. Single use and expiry are enforced by the UPDATE that
+	// spends the row, so they are only really tested against Postgres.
+	linkStudent, _ := signIn(90003, "Link QA")
+	redeem := func(token string) *httptest.ResponseRecorder {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/api/v1/auth/telegram/link?token="+url.QueryEscape(token), nil)
+		req.Header.Set("Origin", "http://localhost")
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+	linkToken, expiresAt, e := auth.IssueLoginLink(context.Background(), linkStudent.ID)
 	if e != nil {
 		t.Fatal(e)
 	}
-	otherStudent, otherSession, e := auth.Register(context.Background(), "Other QA", "other@example.com", "long-test-password", "", "")
+	if !expiresAt.After(time.Now().Add(10 * time.Minute)) {
+		t.Fatalf("login link expires too soon: %v", expiresAt)
+	}
+	redeemed := redeem(linkToken)
+	if redeemed.Code != http.StatusFound || redeemed.Header().Get("Location") != "http://localhost/?auth=success" {
+		t.Fatalf("login link did not sign the student in: %d %s", redeemed.Code, redeemed.Header().Get("Location"))
+	}
+	issued := ""
+	for _, c := range redeemed.Result().Cookies() {
+		if c.Name == "mock_ai_session" {
+			issued = c.Value
+		}
+	}
+	if issued == "" {
+		t.Fatal("login link issued no session cookie")
+	}
+	if who, err := auth.Authenticate(context.Background(), issued); err != nil || who.ID != linkStudent.ID {
+		t.Fatalf("login link session belongs to the wrong student: %v %v", who.ID, err)
+	}
+	// Tapping the same link again must not mint a second session.
+	if replay := redeem(linkToken); replay.Header().Get("Location") != "http://localhost/?auth_error=login_link_invalid" {
+		t.Fatalf("a spent login link was accepted again: %s", replay.Header().Get("Location"))
+	}
+	if forged := redeem("Zm9yZ2VkLXRva2VuLXRoYXQtaXMtbm90LXJlYWwtYXQtYWxsLi4"); forged.Header().Get("Location") != "http://localhost/?auth_error=login_link_invalid" {
+		t.Fatalf("a forged token was accepted: %s", forged.Header().Get("Location"))
+	}
+	// An expired link is refused even though it was never spent.
+	stale, _, e := auth.IssueLoginLink(context.Background(), linkStudent.ID)
 	if e != nil {
 		t.Fatal(e)
 	}
+	staleHash := sha256.Sum256([]byte(stale))
+	if _, e = pool.Exec(context.Background(), "UPDATE telegram_login_links SET expires_at = now() - interval '1 minute' WHERE token_hash = $1", staleHash[:]); e != nil {
+		t.Fatal(e)
+	}
+	if expired := redeem(stale); expired.Header().Get("Location") != "http://localhost/?auth_error=login_link_invalid" {
+		t.Fatalf("an expired login link was accepted: %s", expired.Header().Get("Location"))
+	}
+	// Hammering /start cannot mint an unbounded supply of live tokens.
+	var burstErr error
+	for i := 0; i < 20 && burstErr == nil; i++ {
+		_, _, burstErr = auth.IssueLoginLink(context.Background(), linkStudent.ID)
+	}
+	if !errors.Is(burstErr, identity.ErrTooManyLoginLinks) {
+		t.Fatalf("login links are not rate limited: %v", burstErr)
+	}
+	t.Log("Telegram login links: single use, expiry, forgery and burst limits passed")
+
+	student, session := signIn(90001, "Learning QA")
+	otherStudent, otherSession := signIn(90002, "Other QA")
 	cookie := &http.Cookie{Name: "mock_ai_session", Value: session.Token}
 	other := &http.Cookie{Name: "mock_ai_session", Value: otherSession.Token}
 	request("GET", "/api/v1/me/mistakes", nil, nil, 401)
@@ -223,8 +299,14 @@ func TestLearningIntegration(t *testing.T) {
 	if !mistakes[0].Resolved {
 		t.Fatal("mistake did not resolve")
 	}
-	request("PUT", "/api/v1/me/reminder", app.Reminder{Enabled: true, LocalTime: "19:00", Timezone: "Asia/Tashkent"}, cookie, 422)
-	request("PUT", "/api/v1/me/reminder", app.Reminder{Enabled: false, LocalTime: "19:00", Timezone: "Invalid/Zone"}, cookie, 422)
+	// Reminders need a linked Telegram account. Every student now has one by
+	// the time they can sign in at all, so the rule is satisfied rather than
+	// blocking -- what still has to be refused is a bad timezone.
+	request("PUT", "/api/v1/me/reminder", app.Reminder{Enabled: true, LocalTime: "19:00", Timezone: "Asia/Tashkent"}, cookie, 204)
+	if reminder := request("GET", "/api/v1/me/reminder", nil, cookie, 200); string(reminder["enabled"]) != "true" || string(reminder["telegram_linked"]) != "true" {
+		t.Fatalf("reminder not stored for a Telegram student: %v", reminder)
+	}
+	request("PUT", "/api/v1/me/reminder", app.Reminder{Enabled: true, LocalTime: "19:00", Timezone: "Invalid/Zone"}, cookie, 422)
 	request("PUT", "/api/v1/me/reminder", app.Reminder{Enabled: false, LocalTime: "19:00", Timezone: "Asia/Tashkent"}, cookie, 204)
 	var uid pgtype.UUID
 	uid.Scan(student.ID)
@@ -330,9 +412,9 @@ func TestLearningIntegration(t *testing.T) {
 	}
 	request("POST", "/api/v1/admin/auth/login", map[string]string{"email": "editor@example.com", "password": "separate-admin-password"}, nil, 401)
 	t.Log("separate admin table, session isolation, legacy role denial, origin protection, content publishing, disable, logout and login throttle passed")
-	if _, e = queries.CreateIdentity(context.Background(), db.CreateIdentityParams{UserID: uid, Provider: db.IdentityProviderTelegram, ProviderSubject: "999999999999", Profile: []byte(`{}`)}); e != nil {
-		t.Fatal(e)
-	}
+	// No Telegram identity has to be fabricated here any more: signing in is
+	// what created one. Adding a second would give this student two chat IDs
+	// and claim the reminder twice.
 	request("PUT", "/api/v1/me/reminder", app.Reminder{Enabled: true, LocalTime: "00:00", Timezone: "UTC"}, cookie, 204)
 	first, e := queries.ClaimReminders(context.Background())
 	if e != nil || len(first) != 1 {
@@ -561,4 +643,32 @@ type writingTestEvaluator struct{}
 
 func (writingTestEvaluator) Evaluate(_ context.Context, s writingapp.Submission) ([]byte, error) {
 	return json.Marshal(writingapp.Report{Overall: 9, Summary: "Add a specific example.", TopicAlignment: writingapp.TopicAlignment{Status: "aligned", PromptTopic: "public transport investment", EssayTopic: "public transport benefits", Explanation: "The essay addresses the prompt."}, Criteria: []writingapp.Criterion{{Key: "task_response", Score: 6, Reason: "Needs development.", HowToImprove: "Add a relevant example."}, {Key: "coherence_cohesion", Score: 7, Reason: "Clear links.", HowToImprove: "Link the example to the claim."}, {Key: "lexical_resource", Score: 6, Reason: "Repetitive vocabulary.", HowToImprove: "Use more precise transport terms."}, {Key: "grammar", Score: 7, Reason: "Accurate sentences.", HowToImprove: "Vary sentence structures."}}, Strengths: []string{"Clear claim."}, Issues: []writingapp.Issue{{Category: "argument", Quote: "Public transport helps workers", Explanation: "Explain the mechanism.", Suggestion: "Add a realistic example.", Example: "An early bus connects workers to an industrial estate."}}, NextSteps: []string{"Develop a causal explanation."}, Rewrite: writingapp.Rewrite{Original: "Public transport helps workers", Improved: "Frequent buses give workers a reliable commute", Explanation: "More specific."}})
+}
+
+// signedInitData builds Telegram Mini App init data the way Telegram does.
+func signedInitData(botToken string, id int64, name string) string {
+	profile := fmt.Sprintf(`{"id":%d,"first_name":%q}`, id, name)
+	fields := map[string]string{
+		"auth_date": strconv.FormatInt(time.Now().Unix(), 10),
+		"user":      profile,
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+fields[key])
+	}
+	secret := hmac.New(sha256.New, []byte("WebAppData"))
+	secret.Write([]byte(botToken))
+	signature := hmac.New(sha256.New, secret.Sum(nil))
+	signature.Write([]byte(strings.Join(parts, "\n")))
+	query := url.Values{}
+	for key, value := range fields {
+		query.Set(key, value)
+	}
+	query.Set("hash", hex.EncodeToString(signature.Sum(nil)))
+	return query.Encode()
 }

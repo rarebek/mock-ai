@@ -44,9 +44,8 @@ func New(service *identity.Service, google *googleauth.Provider, logger *slog.Lo
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/auth/register", h.register)
-	mux.HandleFunc("POST /api/v1/auth/login", h.login)
 	mux.HandleFunc("POST /api/v1/auth/telegram", h.loginTelegram)
+	mux.HandleFunc("GET /api/v1/auth/telegram/link", h.loginLink)
 	mux.HandleFunc("GET /api/v1/auth/google/start", h.googleStart)
 	mux.HandleFunc("GET /api/v1/auth/google/callback", h.googleCallback)
 	mux.HandleFunc("POST /api/v1/auth/logout", h.logout)
@@ -75,41 +74,27 @@ func UserFromContext(ctx context.Context) (domain.User, bool) {
 	return user, ok
 }
 
-func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		DisplayName string `json:"display_name"`
-		Email       string `json:"email"`
-		Password    string `json:"password"`
-	}
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+// loginLink redeems a one-time link the Telegram bot sent. It is a GET because
+// the student arrives by tapping a button in a chat, and it redirects straight
+// away so the token does not linger in the address bar or get carried into a
+// Referer header on the next navigation.
+func (h *Handler) loginLink(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		h.redirectAuthResult(w, r, "login_link_invalid")
 		return
 	}
-	user, session, err := h.service.Register(r.Context(), input.DisplayName, input.Email, input.Password, r.UserAgent(), clientIP(r))
+	_, session, err := h.service.LoginWithLink(r.Context(), token, r.UserAgent(), clientIP(r))
 	if err != nil {
-		h.handleServiceError(w, err)
+		// Never log the token: it is a bearer credential until it is spent.
+		if !errors.Is(err, identity.ErrInvalidLoginLink) {
+			h.logger.Error("Telegram login link failed", "error", err)
+		}
+		h.redirectAuthResult(w, r, "login_link_invalid")
 		return
 	}
 	h.setSessionCookie(w, session)
-	writeJSON(w, http.StatusCreated, map[string]any{"user": user})
-}
-
-func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	user, session, err := h.service.Login(r.Context(), input.Email, input.Password, r.UserAgent(), clientIP(r))
-	if err != nil {
-		h.handleServiceError(w, err)
-		return
-	}
-	h.setSessionCookie(w, session)
-	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+	http.Redirect(w, r, h.webOrigin+"/?auth=success", http.StatusFound)
 }
 
 func (h *Handler) loginTelegram(w http.ResponseWriter, r *http.Request) {
@@ -201,10 +186,10 @@ func (h *Handler) handleServiceError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, identity.ErrInvalidInput):
 		writeError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
-	case errors.Is(err, identity.ErrInvalidCredentials):
-		writeError(w, http.StatusUnauthorized, "invalid_credentials", err.Error())
-	case errors.Is(err, identity.ErrEmailTaken):
-		writeError(w, http.StatusConflict, "email_taken", err.Error())
+	case errors.Is(err, identity.ErrInvalidLoginLink):
+		writeError(w, http.StatusUnauthorized, "invalid_login_link", err.Error())
+	case errors.Is(err, identity.ErrTooManyLoginLinks):
+		writeError(w, http.StatusTooManyRequests, "too_many_login_links", err.Error())
 	case errors.Is(err, identity.ErrInvalidSession):
 		writeError(w, http.StatusUnauthorized, "unauthenticated", "authentication required")
 	case errors.Is(err, identity.ErrTelegramDisabled), errors.Is(err, googleauth.ErrDisabled):

@@ -9,14 +9,17 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/own/mock-ai/apps/api/internal/identity/domain"
 	"github.com/own/mock-ai/apps/api/internal/identity/telegram"
 )
 
 type userStoreStub struct {
-	created bool
-	calls   int
+	created   bool
+	calls     int
+	links     int
+	linkError error
 }
 
 func (s *userStoreStub) EnsureTelegramUser(_ context.Context, user telegram.User, raw []byte) (domain.User, bool, error) {
@@ -24,7 +27,18 @@ func (s *userStoreStub) EnsureTelegramUser(_ context.Context, user telegram.User
 	if user.ID != 42 || !json.Valid(raw) {
 		return domain.User{}, false, io.ErrUnexpectedEOF
 	}
-	return domain.User{DisplayName: user.DisplayName()}, s.created, nil
+	return domain.User{ID: "user-1", DisplayName: user.DisplayName()}, s.created, nil
+}
+
+func (s *userStoreStub) IssueLoginLink(_ context.Context, userID string) (string, time.Time, error) {
+	s.links++
+	if s.linkError != nil {
+		return "", time.Time{}, s.linkError
+	}
+	if userID != "user-1" {
+		return "", time.Time{}, io.ErrUnexpectedEOF
+	}
+	return "one-time-token", time.Now().Add(time.Minute), nil
 }
 
 func TestHandleStartCreatesProfileAndSendsMiniAppButtons(t *testing.T) {
@@ -35,7 +49,7 @@ func TestHandleStartCreatesProfileAndSendsMiniAppButtons(t *testing.T) {
 		wantWords string
 	}{
 		{name: "first visit", created: true, wantWords: "Your student profile is ready"},
-		{name: "returning", created: false, wantWords: "Welcome back to MockAI"},
+		{name: "returning", created: false, wantWords: "Welcome back to mock-ai"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -53,7 +67,7 @@ func TestHandleStartCreatesProfileAndSendsMiniAppButtons(t *testing.T) {
 			defer server.Close()
 
 			store := &userStoreStub{created: test.created}
-			bot, err := New("test-token", "https://mock.web.chessinsight.uz", store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			bot, err := New("test-token", "https://mock.web.chessinsight.uz", "https://mock.web.chessinsight.uz", store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			if err != nil {
 				t.Fatalf("new bot: %v", err)
 			}
@@ -91,12 +105,21 @@ func TestHandleStartCreatesProfileAndSendsMiniAppButtons(t *testing.T) {
 			keyboard := markup["inline_keyboard"].([]any)
 			row := keyboard[0].([]any)
 			button := row[0].(map[string]any)
-			if button["text"] != "Open MockAI" {
+			if button["text"] != "Open mock-ai" {
 				t.Fatalf("unexpected inline button: %#v", button)
 			}
 			webApp := button["web_app"].(map[string]any)
 			if webApp["url"] != "https://mock.web.chessinsight.uz" {
 				t.Fatalf("unexpected Mini App URL: %v", webApp["url"])
+			}
+			// Starting the bot is the login: the second row carries a one-time
+			// link, and the raw token must travel in it exactly once.
+			if store.links != 1 {
+				t.Fatalf("login links issued = %d, want 1", store.links)
+			}
+			login := keyboard[1].([]any)[0].(map[string]any)
+			if login["url"] != "https://mock.web.chessinsight.uz/api/v1/auth/telegram/link?token=one-time-token" {
+				t.Fatalf("unexpected login URL: %v", login["url"])
 			}
 		})
 	}
@@ -105,7 +128,7 @@ func TestHandleStartCreatesProfileAndSendsMiniAppButtons(t *testing.T) {
 func TestHandleIgnoresNonStartAndNonPrivateMessages(t *testing.T) {
 	t.Parallel()
 	store := &userStoreStub{}
-	bot, err := New("test-token", "https://mock.web.chessinsight.uz", store, slog.Default())
+	bot, err := New("test-token", "https://mock.web.chessinsight.uz", "https://mock.web.chessinsight.uz", store, slog.Default())
 	if err != nil {
 		t.Fatalf("new bot: %v", err)
 	}
@@ -132,5 +155,41 @@ func TestStartCommandRecognition(t *testing.T) {
 		if got := isStartCommand(input); got != want {
 			t.Errorf("isStartCommand(%q) = %v, want %v", input, got, want)
 		}
+	}
+}
+
+// A student who starts the bot must still get the welcome and the mini app
+// button when no login link could be minted -- a rate limit or a database
+// hiccup must not cost them the way in they already had.
+func TestHandleStartSurvivesLoginLinkFailure(t *testing.T) {
+	t.Parallel()
+	store := &userStoreStub{linkError: io.ErrUnexpectedEOF}
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		body["method"] = strings.TrimPrefix(r.URL.Path, "/bottest-token/")
+		requests = append(requests, body)
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+	bot, err := New("test-token", "https://mock.web.chessinsight.uz", "https://mock.web.chessinsight.uz", store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("new bot: %v", err)
+	}
+	bot.apiBase = server.URL
+	if err := bot.handle(context.Background(), update{Message: &message{
+		Text: "/start", Chat: chat{ID: 7, Type: "private"},
+		From: telegram.User{ID: 42, FirstName: "Donik"},
+	}}); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	send := requests[len(requests)-1]
+	keyboard := send["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
+	if len(keyboard) != 1 {
+		t.Fatalf("keyboard rows = %d, want only the mini app row", len(keyboard))
+	}
+	if text, _ := send["text"].(string); !strings.Contains(text, "Donik") {
+		t.Fatalf("greeting lost: %q", text)
 	}
 }

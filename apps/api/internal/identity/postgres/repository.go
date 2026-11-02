@@ -31,68 +31,60 @@ func New(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool, queries: db.New(pool)}
 }
 
-func (r *Repository) RegisterEmail(ctx context.Context, name, email, passwordHash string) (domain.User, error) {
-	tx, err := r.pool.Begin(ctx)
+// IssueLoginLink stores the hash of a one-time login token for a user. The raw
+// token is never persisted, so the table cannot be replayed into a session.
+func (r *Repository) IssueLoginLink(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time) error {
+	id, err := parseUUID(userID)
 	if err != nil {
-		return domain.User{}, fmt.Errorf("begin email registration: %w", err)
+		return ErrNotFound
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := r.queries.WithTx(tx)
-
-	user, err := q.CreateUser(ctx, db.CreateUserParams{
-		DisplayName: name,
-		Email:       text(email),
-	})
-	if err != nil {
-		return domain.User{}, classify(err)
-	}
-	_, err = q.CreateIdentity(ctx, db.CreateIdentityParams{
-		UserID:          user.ID,
-		Provider:        db.IdentityProviderEmail,
-		ProviderSubject: email,
-		ProviderEmail:   text(email),
-		Profile:         []byte(`{}`),
-	})
-	if err != nil {
-		return domain.User{}, classify(err)
-	}
-	if err := q.CreatePasswordCredential(ctx, db.CreatePasswordCredentialParams{
-		UserID:       user.ID,
-		PasswordHash: passwordHash,
+	if _, err = r.queries.CreateLoginLink(ctx, db.CreateLoginLinkParams{
+		UserID:    id,
+		TokenHash: tokenHash,
+		ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
 	}); err != nil {
-		return domain.User{}, classify(err)
+		return fmt.Errorf("create login link: %w", err)
 	}
-	if err := q.AssignUserRole(ctx, db.AssignUserRoleParams{UserID: user.ID, Role: db.UserRoleStudent}); err != nil {
-		return domain.User{}, fmt.Errorf("assign student role: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return domain.User{}, fmt.Errorf("commit email registration: %w", err)
-	}
-	return toDomain(user, []db.UserRole{db.UserRoleStudent}), nil
+	return nil
 }
 
-func (r *Repository) PasswordLogin(ctx context.Context, email string) (domain.User, string, error) {
-	record, err := r.queries.GetPasswordLogin(ctx, email)
+// RecentLoginLinks counts the links a user has been issued since a cutoff, so
+// repeatedly restarting the bot cannot mint an unbounded supply of them.
+func (r *Repository) RecentLoginLinks(ctx context.Context, userID string, since time.Time) (int64, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return 0, ErrNotFound
+	}
+	n, err := r.queries.CountRecentLoginLinks(ctx, db.CountRecentLoginLinksParams{UserID: id, CreatedAt: pgtype.Timestamptz{Time: since, Valid: true}})
+	if err != nil {
+		return 0, fmt.Errorf("count login links: %w", err)
+	}
+	return n, nil
+}
+
+// ConsumeLoginLink spends a login token and returns its owner. The update is
+// the whole check: a token that is expired, unknown, or already spent matches
+// no row, so two taps on the same link cannot both produce a session.
+func (r *Repository) ConsumeLoginLink(ctx context.Context, tokenHash []byte) (domain.User, error) {
+	owner, err := r.queries.ConsumeLoginLink(ctx, tokenHash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.User{}, "", ErrNotFound
+		return domain.User{}, ErrNotFound
 	}
 	if err != nil {
-		return domain.User{}, "", fmt.Errorf("get password login: %w", err)
+		return domain.User{}, fmt.Errorf("consume login link: %w", err)
 	}
-	roles, err := r.queries.ListUserRoles(ctx, record.ID)
+	user, err := r.queries.GetUserByID(ctx, owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.User{}, ErrNotFound
+	}
 	if err != nil {
-		return domain.User{}, "", fmt.Errorf("list user roles: %w", err)
+		return domain.User{}, fmt.Errorf("get login link user: %w", err)
 	}
-	user := domain.User{
-		ID:            uuidString(record.ID),
-		DisplayName:   record.DisplayName,
-		AvatarURL:     textString(record.AvatarUrl),
-		Email:         textString(record.Email),
-		EmailVerified: record.EmailVerifiedAt.Valid,
-		CreatedAt:     record.CreatedAt.Time,
-		Roles:         roleStrings(roles),
+	roles, err := r.queries.ListUserRoles(ctx, owner)
+	if err != nil {
+		return domain.User{}, fmt.Errorf("list user roles: %w", err)
 	}
-	return user, record.PasswordHash, nil
+	return toDomain(user, roles), nil
 }
 
 func (r *Repository) FindOrCreateExternal(ctx context.Context, profile domain.ExternalProfile) (domain.User, bool, error) {
