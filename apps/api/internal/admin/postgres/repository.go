@@ -38,6 +38,70 @@ func (r *Repository) Create(ctx context.Context, email, name, hash string) (stri
 	}
 	return str(v), nil
 }
+
+// CreateCentreAdmin provisions an administrator for one learning centre.
+func (r *Repository) CreateCentreAdmin(ctx context.Context, centreID, email, name, hash string) (string, error) {
+	c, e := id(centreID)
+	if e != nil {
+		return "", app.ErrCentreNotFound
+	}
+	v, e := r.q.CreateCentreAdmin(ctx, db.CreateCentreAdminParams{Email: email, DisplayName: name, PasswordHash: hash, CentreID: c})
+	if e != nil {
+		if strings.Contains(e.Error(), "admins_email_key") {
+			return "", app.ErrAdminEmailTaken
+		}
+		return "", e
+	}
+	return str(v), nil
+}
+
+func (r *Repository) ListCentreAdmins(ctx context.Context, centreID string) ([]app.CentreAdmin, error) {
+	c, e := id(centreID)
+	if e != nil {
+		return nil, app.ErrCentreNotFound
+	}
+	rows, e := r.q.ListCentreAdmins(ctx, c)
+	if e != nil {
+		return nil, e
+	}
+	out := make([]app.CentreAdmin, 0, len(rows))
+	for _, v := range rows {
+		out = append(out, app.CentreAdmin{ID: str(v.ID), Email: v.Email, DisplayName: v.DisplayName,
+			Disabled: v.Disabled, CreatedAt: v.CreatedAt.Time})
+	}
+	return out, nil
+}
+
+func (r *Repository) SetCentreAdminState(ctx context.Context, centreID, adminID string, disabled bool) error {
+	c, e := id(centreID)
+	if e != nil {
+		return app.ErrCentreNotFound
+	}
+	a, e := id(adminID)
+	if e != nil {
+		return app.ErrAdminNotFound
+	}
+	if _, e = r.q.SetCentreAdminState(ctx, db.SetCentreAdminStateParams{ID: a, CentreID: c, Disabled: disabled}); errors.Is(e, pgx.ErrNoRows) {
+		return app.ErrAdminNotFound
+	}
+	return e
+}
+
+func (r *Repository) ResetCentreAdminPassword(ctx context.Context, centreID, adminID, hash string) error {
+	c, e := id(centreID)
+	if e != nil {
+		return app.ErrCentreNotFound
+	}
+	a, e := id(adminID)
+	if e != nil {
+		return app.ErrAdminNotFound
+	}
+	if _, e = r.q.ResetCentreAdminPassword(ctx, db.ResetCentreAdminPasswordParams{ID: a, CentreID: c, PasswordHash: hash}); errors.Is(e, pgx.ErrNoRows) {
+		return app.ErrAdminNotFound
+	}
+	return e
+}
+
 func (r *Repository) ReserveLogin(ctx context.Context, email string) (app.Credential, error) {
 	v, e := r.q.ReserveAdminLogin(ctx, email)
 	if e != nil {

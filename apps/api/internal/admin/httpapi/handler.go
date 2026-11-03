@@ -182,6 +182,56 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		respond(w, 200, map[string]any{"centre": v})
 	})))
+	// A centre's administrators. Provisioning these was a SQL job; it is the
+	// one step between creating a centre and handing it over, so it belongs on
+	// the same screen as the centre itself.
+	mux.Handle("GET /api/v1/admin/centres/{centre_id}/admins", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, e := h.service.ListCentreAdmins(r.Context(), AdminFromContext(r.Context()), r.PathValue("centre_id"))
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"admins": v})
+	})))
+	mux.Handle("POST /api/v1/admin/centres/{centre_id}/admins", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Email       string `json:"email"`
+			DisplayName string `json:"display_name"`
+		}
+		if !decode(w, r, &input) {
+			return
+		}
+		v, e := h.service.CreateCentreAdmin(r.Context(), AdminFromContext(r.Context()), r.PathValue("centre_id"), input.Email, input.DisplayName)
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 201, map[string]any{"admin": v})
+	})))
+	mux.Handle("PUT /api/v1/admin/centres/{centre_id}/admins/{admin_id}", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Disabled      bool `json:"disabled"`
+			ResetPassword bool `json:"reset_password"`
+		}
+		if !decode(w, r, &input) {
+			return
+		}
+		actor, centre, admin := AdminFromContext(r.Context()), r.PathValue("centre_id"), r.PathValue("admin_id")
+		if input.ResetPassword {
+			v, e := h.service.ResetCentreAdminPassword(r.Context(), actor, centre, admin)
+			if e != nil {
+				h.failCentre(w, e)
+				return
+			}
+			respond(w, 200, map[string]any{"admin": v})
+			return
+		}
+		if e := h.service.SetCentreAdminState(r.Context(), actor, centre, admin, input.Disabled); e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		w.WriteHeader(204)
+	})))
 	mux.Handle("GET /api/v1/admin/managed-content", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v, e := h.service.ListContent(r.Context(), AdminFromContext(r.Context()).ID, r.URL.Query().Get("kind"))
 		if e != nil {
@@ -265,8 +315,12 @@ func (h *Handler) failCentre(w http.ResponseWriter, e error) {
 		fail(w, 403, e.Error())
 	case errors.Is(e, app.ErrInvalidCentre), errors.Is(e, app.ErrCentreTaken):
 		fail(w, 422, e.Error())
-	case errors.Is(e, app.ErrCentreNotFound):
+	case errors.Is(e, app.ErrCentreNotFound), errors.Is(e, app.ErrAdminNotFound):
 		fail(w, 404, e.Error())
+	case errors.Is(e, app.ErrAdminEmailTaken):
+		fail(w, 409, e.Error())
+	case errors.Is(e, app.ErrInvalid):
+		fail(w, 422, e.Error())
 	default:
 		fail(w, 500, "Learning centre request failed")
 	}

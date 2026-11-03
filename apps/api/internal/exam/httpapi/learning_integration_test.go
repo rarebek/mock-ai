@@ -638,6 +638,78 @@ func TestLearningIntegration(t *testing.T) {
 	}
 	request("POST", "/api/v1/admin/centres", map[string]any{"name": "Duplicate", "slug": "gamma"}, platformAdmin, 422)
 	request("POST", "/api/v1/admin/centres", map[string]any{"name": "", "slug": "ok-slug"}, platformAdmin, 422)
+	// Provisioning a centre's administrator is a screen, not a SQL job: the
+	// platform administrator creates the account and is shown its password
+	// once, and that account must then actually work and be confined.
+	betaAdminBody := request("POST", "/api/v1/admin/centres/"+centreB+"/admins",
+		map[string]any{"email": "beta-admin@example.com", "display_name": "Beta Admin"}, platformAdmin, 201)
+	var provisioned struct {
+		ID       string `json:"id"`
+		Password string `json:"password"`
+	}
+	json.Unmarshal(betaAdminBody["admin"], &provisioned)
+	if len(provisioned.Password) < 20 || provisioned.ID == "" {
+		t.Fatalf("a provisioned administrator needs a real password: %+v", provisioned)
+	}
+	// Only a platform administrator provisions, and an email cannot be reused.
+	request("POST", "/api/v1/admin/centres/"+centreB+"/admins",
+		map[string]any{"email": "rogue@example.com", "display_name": "Rogue"}, alphaAdmin, 403)
+	request("POST", "/api/v1/admin/centres/"+centreB+"/admins",
+		map[string]any{"email": "beta-admin@example.com", "display_name": "Duplicate"}, platformAdmin, 409)
+	request("POST", "/api/v1/admin/centres/"+centreB+"/admins",
+		map[string]any{"email": "not-an-email", "display_name": "Bad"}, platformAdmin, 422)
+
+	// The generated password is the only one ever shown, and it works.
+	betaAdmin := adminLogin("beta-admin@example.com", provisioned.Password)
+	if betaSeen := adminSlugs(betaAdmin); !betaSeen["beta-only"] || betaSeen["alpha-only"] || betaSeen["global-only"] {
+		t.Fatalf("a provisioned administrator is not confined to their centre: %v", betaSeen)
+	}
+	request("GET", "/api/v1/admin/centres", nil, betaAdmin, 403)
+
+	listed := request("GET", "/api/v1/admin/centres/"+centreB+"/admins", nil, platformAdmin, 200)
+	var centreAdmins []struct {
+		Email    string `json:"email"`
+		Disabled bool   `json:"disabled"`
+		Password string `json:"password"`
+	}
+	json.Unmarshal(listed["admins"], &centreAdmins)
+	if len(centreAdmins) != 1 || centreAdmins[0].Email != "beta-admin@example.com" {
+		t.Fatalf("centre administrators not listed: %+v", centreAdmins)
+	}
+	if centreAdmins[0].Password != "" {
+		t.Fatal("a password was returned again after it was issued")
+	}
+	// Alpha's list must not show Beta's administrator.
+	alphaAdmins := request("GET", "/api/v1/admin/centres/"+centreA+"/admins", nil, platformAdmin, 200)
+	var alphaList []struct{ Email string }
+	json.Unmarshal(alphaAdmins["admins"], &alphaList)
+	for _, v := range alphaList {
+		if v.Email == "beta-admin@example.com" {
+			t.Fatal("a centre's administrator is listed under another centre")
+		}
+	}
+	// Re-keying is the recovery path, and the old password stops working.
+	rekeyed := request("PUT", "/api/v1/admin/centres/"+centreB+"/admins/"+provisioned.ID,
+		map[string]any{"reset_password": true}, platformAdmin, 200)
+	var fresh struct {
+		Password string `json:"password"`
+	}
+	json.Unmarshal(rekeyed["admin"], &fresh)
+	if fresh.Password == "" || fresh.Password == provisioned.Password {
+		t.Fatal("re-keying did not issue a new password")
+	}
+	oldLogin := httptest.NewRequest("POST", "/api/v1/admin/auth/login", strings.NewReader(`{"email":"beta-admin@example.com","password":"`+provisioned.Password+`"}`))
+	oldLogin.Header.Set("Origin", "http://localhost")
+	oldResponse := httptest.NewRecorder()
+	handler.ServeHTTP(oldResponse, oldLogin)
+	if oldResponse.Code == 200 {
+		t.Fatal("the replaced password still signs in")
+	}
+	// Disabling locks the account out; the centre keeps its content.
+	request("PUT", "/api/v1/admin/centres/"+centreB+"/admins/"+provisioned.ID, map[string]any{"disabled": true}, platformAdmin, 204)
+	// Re-keying cannot cross centres either.
+	request("PUT", "/api/v1/admin/centres/"+centreA+"/admins/"+provisioned.ID, map[string]any{"reset_password": true}, platformAdmin, 404)
+
 	// The authoring side leaks in the other direction: what a centre's
 	// administrator creates must land in their centre, and what they can see
 	// must stop at its edge.

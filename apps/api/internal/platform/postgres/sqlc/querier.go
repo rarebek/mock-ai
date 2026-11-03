@@ -39,6 +39,9 @@ type Querier interface {
 	CreateAdminSession(ctx context.Context, arg CreateAdminSessionParams) error
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (Attempt, error)
 	CreateCentre(ctx context.Context, arg CreateCentreParams) (Centre, error)
+	// An administrator belonging to a learning centre. Created only by a platform
+	// administrator, and confined to that centre by every other query.
+	CreateCentreAdmin(ctx context.Context, arg CreateCentreAdminParams) (pgtype.UUID, error)
 	CreateContentAnswer(ctx context.Context, arg CreateContentAnswerParams) error
 	CreateContentBand(ctx context.Context, arg CreateContentBandParams) error
 	CreateContentDraft(ctx context.Context, arg CreateContentDraftParams) (pgtype.UUID, error)
@@ -114,6 +117,7 @@ type Querier interface {
 	ListAdminStudents(ctx context.Context, adminID pgtype.UUID) ([]ListAdminStudentsRow, error)
 	ListAttemptAnswers(ctx context.Context, attemptID pgtype.UUID) ([]AttemptAnswer, error)
 	ListAttemptScoringRows(ctx context.Context, id pgtype.UUID) ([]ListAttemptScoringRowsRow, error)
+	ListCentreAdmins(ctx context.Context, centreID pgtype.UUID) ([]ListCentreAdminsRow, error)
 	ListCentres(ctx context.Context) ([]ListCentresRow, error)
 	ListContentDrafts(ctx context.Context, adminID pgtype.UUID) ([]ListContentDraftsRow, error)
 	ListContentImports(ctx context.Context, adminAuthorID pgtype.UUID) ([]ListContentImportsRow, error)
@@ -155,6 +159,7 @@ type Querier interface {
 	RenewSpeakingLive(ctx context.Context, arg RenewSpeakingLiveParams) (int64, error)
 	ReserveAdminLogin(ctx context.Context, email string) (ReserveAdminLoginRow, error)
 	ResetAdminLogin(ctx context.Context, id pgtype.UUID) error
+	ResetCentreAdminPassword(ctx context.Context, arg ResetCentreAdminPasswordParams) (pgtype.UUID, error)
 	RevokeSession(ctx context.Context, tokenHash []byte) error
 	SaveAttemptAnswer(ctx context.Context, arg SaveAttemptAnswerParams) (AttemptAnswer, error)
 	SaveCommunityProfile(ctx context.Context, arg SaveCommunityProfileParams) error
@@ -163,6 +168,10 @@ type Querier interface {
 	SaveWorkspace(ctx context.Context, arg SaveWorkspaceParams) ([]byte, error)
 	SaveWriting(ctx context.Context, arg SaveWritingParams) (WritingSubmission, error)
 	SetAttemptAnswerScore(ctx context.Context, arg SetAttemptAnswerScoreParams) error
+	// The centre is part of the check, so a platform administrator cannot
+	// accidentally disable or re-key an administrator of a different centre, and a
+	// centre administrator has no route here at all.
+	SetCentreAdminState(ctx context.Context, arg SetCentreAdminStateParams) (pgtype.UUID, error)
 	SetContentImportTotal(ctx context.Context, arg SetContentImportTotalParams) error
 	SetDraftExam(ctx context.Context, arg SetDraftExamParams) error
 	SetSpeakingLive(ctx context.Context, arg SetSpeakingLiveParams) error

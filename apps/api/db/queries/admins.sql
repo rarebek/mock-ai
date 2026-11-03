@@ -78,3 +78,28 @@ WHERE u.deleted_at IS NULL
   AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
 ORDER BY lower(u.display_name), u.id
 LIMIT 500;
+
+-- An administrator belonging to a learning centre. Created only by a platform
+-- administrator, and confined to that centre by every other query.
+-- name: CreateCentreAdmin :one
+INSERT INTO admins (email, display_name, password_hash, centre_id)
+VALUES ($1, $2, $3, $4)
+RETURNING id;
+
+-- name: ListCentreAdmins :many
+SELECT id, email, display_name, disabled, created_at
+FROM admins WHERE centre_id = $1
+ORDER BY lower(display_name), id;
+
+-- The centre is part of the check, so a platform administrator cannot
+-- accidentally disable or re-key an administrator of a different centre, and a
+-- centre administrator has no route here at all.
+-- name: SetCentreAdminState :one
+UPDATE admins SET disabled = sqlc.arg(disabled)
+WHERE id = sqlc.arg(id) AND centre_id = sqlc.arg(centre_id)
+RETURNING id;
+
+-- name: ResetCentreAdminPassword :one
+UPDATE admins SET password_hash = sqlc.arg(password_hash), login_attempts = 0, login_window = now()
+WHERE id = sqlc.arg(id) AND centre_id = sqlc.arg(centre_id)
+RETURNING id;

@@ -144,6 +144,10 @@ type Repository interface {
 	DeleteSession(context.Context, string) error
 	Dashboard(context.Context, string) (Dashboard, error)
 	ListCentres(context.Context) ([]Centre, error)
+	CreateCentreAdmin(ctx context.Context, centreID, email, name, hash string) (string, error)
+	ListCentreAdmins(ctx context.Context, centreID string) ([]CentreAdmin, error)
+	SetCentreAdminState(ctx context.Context, centreID, adminID string, disabled bool) error
+	ResetCentreAdminPassword(ctx context.Context, centreID, adminID, hash string) error
 	CreateCentre(context.Context, string, string, string, bool) (Centre, error)
 	UpdateCentre(context.Context, string, string, bool, bool) (Centre, error)
 	ListContent(context.Context, string, string) ([]ManagedContent, error)
@@ -245,7 +249,22 @@ var (
 	ErrInvalidCentre    = errors.New("a centre needs a name and a short url-safe slug")
 	ErrCentreTaken      = errors.New("that centre slug is already in use")
 	ErrCentreNotFound   = errors.New("learning centre not found")
+	ErrAdminEmailTaken  = errors.New("an administrator already uses that email address")
+	ErrAdminNotFound    = errors.New("administrator not found in this centre")
 )
+
+// CentreAdmin is an administrator of one learning centre.
+type CentreAdmin struct {
+	ID          string    `json:"id"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	Disabled    bool      `json:"disabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	// Password is set only on the response that creates or re-keys an account.
+	// It is never stored in readable form and never returned again, so the
+	// operator has exactly one chance to pass it on.
+	Password string `json:"password,omitempty"`
+}
 
 var centreSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
 
@@ -284,6 +303,89 @@ func (s *Service) UpdateCentre(ctx context.Context, actor Admin, id, name string
 		return Centre{}, ErrInvalidCentre
 	}
 	return s.repository.UpdateCentre(ctx, id, name, includeGlobal, disabled)
+}
+
+// CreateCentreAdmin provisions a centre's administrator and returns the one
+// password they will ever be shown. Generating it rather than asking for one
+// keeps a weak shared password out of the system and removes a field from the
+// only screen that creates these accounts.
+func (s *Service) CreateCentreAdmin(ctx context.Context, actor Admin, centreID, email, name string) (CentreAdmin, error) {
+	if !actor.Platform() {
+		return CentreAdmin{}, ErrNotPlatformAdmin
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	name = strings.TrimSpace(name)
+	parsed, e := mail.ParseAddress(email)
+	if e != nil || parsed.Address != email || len(email) > 254 || name == "" || utf8.RuneCountInString(name) > 100 {
+		return CentreAdmin{}, ErrInvalid
+	}
+	plain, e := initialPassword()
+	if e != nil {
+		return CentreAdmin{}, e
+	}
+	hash, e := password.Hash(plain)
+	if e != nil {
+		return CentreAdmin{}, e
+	}
+	id, e := s.repository.CreateCentreAdmin(ctx, centreID, email, name, hash)
+	if e != nil {
+		return CentreAdmin{}, e
+	}
+	return CentreAdmin{ID: id, Email: email, DisplayName: name, Password: plain}, nil
+}
+
+func (s *Service) ListCentreAdmins(ctx context.Context, actor Admin, centreID string) ([]CentreAdmin, error) {
+	if !actor.Platform() {
+		return nil, ErrNotPlatformAdmin
+	}
+	return s.repository.ListCentreAdmins(ctx, centreID)
+}
+
+func (s *Service) SetCentreAdminState(ctx context.Context, actor Admin, centreID, adminID string, disabled bool) error {
+	if !actor.Platform() {
+		return ErrNotPlatformAdmin
+	}
+	return s.repository.SetCentreAdminState(ctx, centreID, adminID, disabled)
+}
+
+// ResetCentreAdminPassword issues a new password, which is the recovery path:
+// there is no password reset by email because there is no mail infrastructure,
+// so an administrator who is locked out is re-keyed by the operator.
+func (s *Service) ResetCentreAdminPassword(ctx context.Context, actor Admin, centreID, adminID string) (CentreAdmin, error) {
+	if !actor.Platform() {
+		return CentreAdmin{}, ErrNotPlatformAdmin
+	}
+	plain, e := initialPassword()
+	if e != nil {
+		return CentreAdmin{}, e
+	}
+	hash, e := password.Hash(plain)
+	if e != nil {
+		return CentreAdmin{}, e
+	}
+	if e = s.repository.ResetCentreAdminPassword(ctx, centreID, adminID, hash); e != nil {
+		return CentreAdmin{}, e
+	}
+	return CentreAdmin{ID: adminID, Password: plain}, nil
+}
+
+// initialPassword returns a password a person can read off a screen and type
+// once, with enough entropy that it does not need to be changed: five groups
+// of five characters from an alphabet without lookalikes is about 123 bits.
+func initialPassword() (string, error) {
+	const alphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+	raw := make([]byte, 25)
+	if _, e := rand.Read(raw); e != nil {
+		return "", e
+	}
+	out := make([]byte, 0, 29)
+	for i, b := range raw {
+		if i > 0 && i%5 == 0 {
+			out = append(out, '-')
+		}
+		out = append(out, alphabet[int(b)%len(alphabet)])
+	}
+	return string(out), nil
 }
 
 // joinCode returns 160 bits of randomness in an alphabet without characters a

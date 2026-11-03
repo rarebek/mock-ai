@@ -176,6 +176,33 @@ func (q *Queries) CreateAdminSession(ctx context.Context, arg CreateAdminSession
 	return err
 }
 
+const createCentreAdmin = `-- name: CreateCentreAdmin :one
+INSERT INTO admins (email, display_name, password_hash, centre_id)
+VALUES ($1, $2, $3, $4)
+RETURNING id
+`
+
+type CreateCentreAdminParams struct {
+	Email        string      `json:"email"`
+	DisplayName  string      `json:"display_name"`
+	PasswordHash string      `json:"password_hash"`
+	CentreID     pgtype.UUID `json:"centre_id"`
+}
+
+// An administrator belonging to a learning centre. Created only by a platform
+// administrator, and confined to that centre by every other query.
+func (q *Queries) CreateCentreAdmin(ctx context.Context, arg CreateCentreAdminParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, createCentreAdmin,
+		arg.Email,
+		arg.DisplayName,
+		arg.PasswordHash,
+		arg.CentreID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const deleteAdminSession = `-- name: DeleteAdminSession :exec
 DELETE FROM admin_sessions WHERE token_hash=$1
 `
@@ -265,6 +292,46 @@ func (q *Queries) ListAdminStudents(ctx context.Context, adminID pgtype.UUID) ([
 	return items, nil
 }
 
+const listCentreAdmins = `-- name: ListCentreAdmins :many
+SELECT id, email, display_name, disabled, created_at
+FROM admins WHERE centre_id = $1
+ORDER BY lower(display_name), id
+`
+
+type ListCentreAdminsRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Email       string             `json:"email"`
+	DisplayName string             `json:"display_name"`
+	Disabled    bool               `json:"disabled"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListCentreAdmins(ctx context.Context, centreID pgtype.UUID) ([]ListCentreAdminsRow, error) {
+	rows, err := q.db.Query(ctx, listCentreAdmins, centreID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCentreAdminsRow{}
+	for rows.Next() {
+		var i ListCentreAdminsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Disabled,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const reserveAdminLogin = `-- name: ReserveAdminLogin :one
 UPDATE admins SET
  login_attempts=CASE WHEN login_window<now()-interval '15 minutes' THEN 1 ELSE login_attempts+1 END,
@@ -299,4 +366,45 @@ UPDATE admins SET login_attempts=0,login_window=now() WHERE id=$1
 func (q *Queries) ResetAdminLogin(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, resetAdminLogin, id)
 	return err
+}
+
+const resetCentreAdminPassword = `-- name: ResetCentreAdminPassword :one
+UPDATE admins SET password_hash = $1, login_attempts = 0, login_window = now()
+WHERE id = $2 AND centre_id = $3
+RETURNING id
+`
+
+type ResetCentreAdminPasswordParams struct {
+	PasswordHash string      `json:"password_hash"`
+	ID           pgtype.UUID `json:"id"`
+	CentreID     pgtype.UUID `json:"centre_id"`
+}
+
+func (q *Queries) ResetCentreAdminPassword(ctx context.Context, arg ResetCentreAdminPasswordParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, resetCentreAdminPassword, arg.PasswordHash, arg.ID, arg.CentreID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const setCentreAdminState = `-- name: SetCentreAdminState :one
+UPDATE admins SET disabled = $1
+WHERE id = $2 AND centre_id = $3
+RETURNING id
+`
+
+type SetCentreAdminStateParams struct {
+	Disabled bool        `json:"disabled"`
+	ID       pgtype.UUID `json:"id"`
+	CentreID pgtype.UUID `json:"centre_id"`
+}
+
+// The centre is part of the check, so a platform administrator cannot
+// accidentally disable or re-key an administrator of a different centre, and a
+// centre administrator has no route here at all.
+func (q *Queries) SetCentreAdminState(ctx context.Context, arg SetCentreAdminStateParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, setCentreAdminState, arg.Disabled, arg.ID, arg.CentreID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
