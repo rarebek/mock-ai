@@ -71,7 +71,7 @@ func (r *Repository) DeleteSession(ctx context.Context, hash string) error {
 	return r.q.DeleteAdminSession(ctx, hash)
 }
 
-func (r *Repository) Dashboard(ctx context.Context) (app.Dashboard, error) {
+func (r *Repository) Dashboard(ctx context.Context, adminID string) (app.Dashboard, error) {
 	s, e := r.q.AdminDashboardSummary(ctx)
 	if e != nil {
 		return app.Dashboard{}, e
@@ -80,7 +80,11 @@ func (r *Repository) Dashboard(ctx context.Context) (app.Dashboard, error) {
 	if e != nil {
 		return app.Dashboard{}, e
 	}
-	counts, e := r.q.AdminContentBreakdown(ctx)
+	a, e := id(adminID)
+	if e != nil {
+		return app.Dashboard{}, e
+	}
+	counts, e := r.q.AdminContentBreakdown(ctx, a)
 	if e != nil {
 		return app.Dashboard{}, e
 	}
@@ -94,7 +98,11 @@ func (r *Repository) Dashboard(ctx context.Context) (app.Dashboard, error) {
 	}
 	return out, nil
 }
-func (r *Repository) ListStudents(ctx context.Context) ([]app.Student, error) {
+func (r *Repository) ListStudents(ctx context.Context, adminID string) ([]app.Student, error) {
+	a, e := id(adminID)
+	if e != nil {
+		return nil, e
+	}
 	rows, e := r.p.Query(ctx, `
 SELECT u.id,u.display_name,coalesce(u.email,''),coalesce(t.profile->>'username',''),coalesce(t.provider_subject,''),u.created_at,
  activity.last_activity,coalesce(a.total,0)::int,coalesce(a.completed,0)::int,coalesce(p.total,0)::int,
@@ -110,7 +118,10 @@ WHERE u.deleted_at IS NULL
  AND coalesce(u.email,'') NOT LIKE '%@mock-ai.internal'
  AND coalesce(u.email,'') NOT LIKE '%@example.test'
  AND u.display_name NOT ILIKE '%E2E%'
-ORDER BY coalesce(activity.last_activity,u.created_at) DESC,u.id LIMIT 500`)
+ -- A centre's administrator sees their own students; the platform
+ -- administrator sees the students who belong to no centre.
+ AND u.centre_id IS NOT DISTINCT FROM (SELECT adm.centre_id FROM admins adm WHERE adm.id=$1)
+ORDER BY coalesce(activity.last_activity,u.created_at) DESC,u.id LIMIT 500`, a)
 	if e != nil {
 		return nil, e
 	}
@@ -147,12 +158,12 @@ func floatPtr(v pgtype.Float8) *float64 {
 	n := v.Float64
 	return &n
 }
-func (r *Repository) StudentProgress(ctx context.Context, studentID string) (app.StudentProgress, error) {
+func (r *Repository) StudentProgress(ctx context.Context, adminID, studentID string) (app.StudentProgress, error) {
 	uid, e := id(studentID)
 	if e != nil {
 		return app.StudentProgress{}, app.ErrStudentNotFound
 	}
-	students, e := r.ListStudents(ctx)
+	students, e := r.ListStudents(ctx, adminID)
 	if e != nil {
 		return app.StudentProgress{}, e
 	}

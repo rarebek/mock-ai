@@ -12,7 +12,9 @@ import (
 )
 
 const adminContentBreakdown = `-- name: AdminContentBreakdown :many
-SELECT kind,status,count(*)::integer AS count FROM managed_content GROUP BY kind,status ORDER BY kind,status
+SELECT kind,status,count(*)::integer AS count FROM managed_content
+WHERE centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $1)
+GROUP BY kind,status ORDER BY kind,status
 `
 
 type AdminContentBreakdownRow struct {
@@ -21,8 +23,8 @@ type AdminContentBreakdownRow struct {
 	Count  int32  `json:"count"`
 }
 
-func (q *Queries) AdminContentBreakdown(ctx context.Context) ([]AdminContentBreakdownRow, error) {
-	rows, err := q.db.Query(ctx, adminContentBreakdown)
+func (q *Queries) AdminContentBreakdown(ctx context.Context, adminID pgtype.UUID) ([]AdminContentBreakdownRow, error) {
+	rows, err := q.db.Query(ctx, adminContentBreakdown, adminID)
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +226,7 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) telegram ON true
 WHERE u.deleted_at IS NULL
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $1)
 ORDER BY lower(u.display_name), u.id
 LIMIT 500
 `
@@ -236,8 +239,8 @@ type ListAdminStudentsRow struct {
 	TelegramID       string      `json:"telegram_id"`
 }
 
-func (q *Queries) ListAdminStudents(ctx context.Context) ([]ListAdminStudentsRow, error) {
-	rows, err := q.db.Query(ctx, listAdminStudents)
+func (q *Queries) ListAdminStudents(ctx context.Context, adminID pgtype.UUID) ([]ListAdminStudentsRow, error) {
+	rows, err := q.db.Query(ctx, listAdminStudents, adminID)
 	if err != nil {
 		return nil, err
 	}

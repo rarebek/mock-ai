@@ -126,7 +126,7 @@ func (h *Handler) registerLearning(mux *http.ServeMux) {
 		}
 	}
 	mux.HandleFunc("GET /api/v1/admin/content", admin(func(w http.ResponseWriter, r *http.Request) {
-		v, e := h.service.ListDrafts(r.Context())
+		v, e := h.service.ListDrafts(r.Context(), adminhttp.AdminFromContext(r.Context()).ID)
 		if e != nil {
 			h.fail(w, e)
 			return

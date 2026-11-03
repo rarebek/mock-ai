@@ -110,7 +110,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		respond(w, 200, map[string]any{"admin": AdminFromContext(r.Context())})
 	})))
 	mux.Handle("GET /api/v1/admin/dashboard", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		v, e := h.service.Dashboard(r.Context())
+		v, e := h.service.Dashboard(r.Context(), AdminFromContext(r.Context()).ID)
 		if e != nil {
 			fail(w, 500, "Dashboard unavailable")
 			return
@@ -118,7 +118,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		respond(w, 200, v)
 	})))
 	mux.Handle("GET /api/v1/admin/students", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		students, e := h.service.ListStudents(r.Context())
+		students, e := h.service.ListStudents(r.Context(), AdminFromContext(r.Context()).ID)
 		if e != nil {
 			fail(w, 500, "Students could not be loaded")
 			return
@@ -126,7 +126,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		respond(w, 200, map[string]any{"students": students})
 	})))
 	mux.Handle("GET /api/v1/admin/students/{student_id}", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		student, e := h.service.StudentProgress(r.Context(), r.PathValue("student_id"))
+		student, e := h.service.StudentProgress(r.Context(), AdminFromContext(r.Context()).ID, r.PathValue("student_id"))
 		if e != nil {
 			if errors.Is(e, app.ErrStudentNotFound) {
 				fail(w, 404, e.Error())

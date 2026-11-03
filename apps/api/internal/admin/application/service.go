@@ -142,7 +142,7 @@ type Repository interface {
 	SaveSession(context.Context, string, string, time.Time) error
 	Session(context.Context, string) (Admin, error)
 	DeleteSession(context.Context, string) error
-	Dashboard(context.Context) (Dashboard, error)
+	Dashboard(context.Context, string) (Dashboard, error)
 	ListCentres(context.Context) ([]Centre, error)
 	CreateCentre(context.Context, string, string, string, bool) (Centre, error)
 	UpdateCentre(context.Context, string, string, bool, bool) (Centre, error)
@@ -150,8 +150,8 @@ type Repository interface {
 	CreateContent(context.Context, string, ManagedContent) (ManagedContent, error)
 	UpdateContent(context.Context, string, ManagedContent) (ManagedContent, error)
 	DeleteContent(context.Context, string, string) error
-	ListStudents(context.Context) ([]Student, error)
-	StudentProgress(context.Context, string) (StudentProgress, error)
+	ListStudents(context.Context, string) ([]Student, error)
+	StudentProgress(context.Context, string, string) (StudentProgress, error)
 }
 type Service struct {
 	repository Repository
@@ -223,8 +223,8 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return s.repository.DeleteSession(ctx, tokenHash(token))
 }
 
-func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
-	return s.repository.Dashboard(ctx)
+func (s *Service) Dashboard(ctx context.Context, adminID string) (Dashboard, error) {
+	return s.repository.Dashboard(ctx, adminID)
 }
 
 // Centre is a learning centre: a tenant whose uploaded content is private to
@@ -307,14 +307,17 @@ func (s *Service) ListContent(ctx context.Context, adminID, kind string) ([]Mana
 	}
 	return s.repository.ListContent(ctx, adminID, kind)
 }
-func (s *Service) ListStudents(ctx context.Context) ([]Student, error) {
-	return s.repository.ListStudents(ctx)
+func (s *Service) ListStudents(ctx context.Context, adminID string) ([]Student, error) {
+	return s.repository.ListStudents(ctx, adminID)
 }
-func (s *Service) StudentProgress(ctx context.Context, id string) (StudentProgress, error) {
+func (s *Service) StudentProgress(ctx context.Context, adminID, id string) (StudentProgress, error) {
 	if !regexp.MustCompile(`^[0-9a-fA-F-]{36}$`).MatchString(id) {
 		return StudentProgress{}, ErrStudentNotFound
 	}
-	return s.repository.StudentProgress(ctx, id)
+	// The lookup runs over the students this administrator can see, so asking
+	// for a student in another centre reads as not found rather than as a
+	// record they were allowed to open.
+	return s.repository.StudentProgress(ctx, adminID, id)
 }
 func (s *Service) SaveContent(ctx context.Context, adminID string, item ManagedContent) (ManagedContent, error) {
 	item.Kind = strings.TrimSpace(item.Kind)

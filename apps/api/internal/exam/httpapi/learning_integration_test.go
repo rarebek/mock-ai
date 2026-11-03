@@ -638,6 +638,51 @@ func TestLearningIntegration(t *testing.T) {
 	}
 	request("POST", "/api/v1/admin/centres", map[string]any{"name": "Duplicate", "slug": "gamma"}, platformAdmin, 422)
 	request("POST", "/api/v1/admin/centres", map[string]any{"name": "", "slug": "ok-slug"}, platformAdmin, 422)
+	// The authoring side leaks in the other direction: what a centre's
+	// administrator creates must land in their centre, and what they can see
+	// must stop at its edge.
+	adminStudents := func(c *http.Cookie) map[string]bool {
+		t.Helper()
+		body := request("GET", "/api/v1/admin/students", nil, c, 200)
+		var items []struct {
+			DisplayName string `json:"display_name"`
+		}
+		json.Unmarshal(body["students"], &items)
+		seen := map[string]bool{}
+		for _, v := range items {
+			seen[v.DisplayName] = true
+		}
+		return seen
+	}
+	roster := adminStudents(alphaAdmin)
+	if !roster["Alpha Student"] || roster["Beta Student"] || roster["Global Student"] {
+		t.Fatalf("a centre administrator sees students outside their centre: %v", roster)
+	}
+	if platformRoster := adminStudents(platformAdmin); platformRoster["Alpha Student"] || !platformRoster["Global Student"] {
+		t.Fatalf("the platform administrator's roster is not the unattached students: %v", platformRoster)
+	}
+
+	// Content a centre administrator writes is stamped with their centre, so
+	// they cannot publish into the global library at all.
+	request("POST", "/api/v1/admin/managed-content", map[string]any{
+		"kind": "vocabulary", "slug": "alpha-authored", "title": "Alpha Authored", "summary": "",
+		"status": "published", "sort_order": 0,
+		"data": map[string]any{"meaning": "a short explanation", "distractors": []string{"wrong one", "wrong two"}},
+	}, alphaAdmin, 201)
+	var authoredCentre string
+	if e = pool.QueryRow(ctx, "SELECT coalesce(centre_id::text,'') FROM managed_content WHERE slug='alpha-authored'").Scan(&authoredCentre); e != nil {
+		t.Fatal(e)
+	}
+	if authoredCentre != centreA {
+		t.Fatalf("a centre administrator's content landed in %q, not their centre", authoredCentre)
+	}
+	if vocabulary(globalCookie)["alpha-authored"] {
+		t.Fatal("a centre administrator published into the global library")
+	}
+	if !vocabulary(alphaCookie)["alpha-authored"] {
+		t.Fatal("a centre's own students cannot see what their centre published")
+	}
+
 	t.Log("learning centres: per-centre libraries, closed curricula, one-way joining, admin confinement and platform-only centre management passed")
 
 	t.Log("community privacy, opt-out, validation, ties, duplicate prevention, empty mocks and UTC reset passed")

@@ -78,7 +78,7 @@ type LearningRepository interface {
 	RetryMistake(context.Context, string, string, []string) (PracticeFeedback, error)
 	GetReminder(context.Context, string) (Reminder, error)
 	SaveReminder(context.Context, string, Reminder) error
-	ListDrafts(context.Context) ([]Draft, error)
+	ListDrafts(context.Context, string) ([]Draft, error)
 	SaveDraft(context.Context, string, string, Content) (string, error)
 	PublishDraft(context.Context, string) (string, error)
 	CreateImport(context.Context, string, string, int64, string, string, string, string, string, string) (string, error)
@@ -133,8 +133,8 @@ func (s *Service) SaveReminder(ctx context.Context, u string, r Reminder) error 
 	}
 	return s.repository.SaveReminder(ctx, u, r)
 }
-func (s *Service) ListDrafts(ctx context.Context) ([]Draft, error) {
-	return s.repository.ListDrafts(ctx)
+func (s *Service) ListDrafts(ctx context.Context, adminID string) ([]Draft, error) {
+	return s.repository.ListDrafts(ctx, adminID)
 }
 func (s *Service) SaveDraft(ctx context.Context, u, id string, c Content) (string, error) {
 	if c.AccessScope == "" {

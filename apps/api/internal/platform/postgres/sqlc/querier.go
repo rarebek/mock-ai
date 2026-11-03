@@ -12,7 +12,7 @@ import (
 
 type Querier interface {
 	AddContentImportDraft(ctx context.Context, arg AddContentImportDraftParams) error
-	AdminContentBreakdown(ctx context.Context) ([]AdminContentBreakdownRow, error)
+	AdminContentBreakdown(ctx context.Context, adminID pgtype.UUID) ([]AdminContentBreakdownRow, error)
 	AdminDashboardSummary(ctx context.Context) (AdminDashboardSummaryRow, error)
 	AdminDashboardTrend(ctx context.Context) ([]AdminDashboardTrendRow, error)
 	AnswerSpeaking(ctx context.Context, arg AnswerSpeakingParams) (int64, error)
@@ -111,11 +111,11 @@ type Querier interface {
 	// so a stray link cannot move someone out of the centre teaching them. The
 	// WHERE clause is the whole check, so a concurrent second tap cannot race it.
 	JoinCentre(ctx context.Context, arg JoinCentreParams) (pgtype.UUID, error)
-	ListAdminStudents(ctx context.Context) ([]ListAdminStudentsRow, error)
+	ListAdminStudents(ctx context.Context, adminID pgtype.UUID) ([]ListAdminStudentsRow, error)
 	ListAttemptAnswers(ctx context.Context, attemptID pgtype.UUID) ([]AttemptAnswer, error)
 	ListAttemptScoringRows(ctx context.Context, id pgtype.UUID) ([]ListAttemptScoringRowsRow, error)
 	ListCentres(ctx context.Context) ([]ListCentresRow, error)
-	ListContentDrafts(ctx context.Context) ([]ListContentDraftsRow, error)
+	ListContentDrafts(ctx context.Context, adminID pgtype.UUID) ([]ListContentDraftsRow, error)
 	ListContentImports(ctx context.Context, adminAuthorID pgtype.UUID) ([]ListContentImportsRow, error)
 	ListExamSections(ctx context.Context, examVersionID pgtype.UUID) ([]ListExamSectionsRow, error)
 	ListManagedContent(ctx context.Context, arg ListManagedContentParams) ([]ManagedContent, error)

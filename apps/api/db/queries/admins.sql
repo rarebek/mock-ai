@@ -57,7 +57,9 @@ SELECT d.activity_date,coalesce(s.value,0)::integer AS signups,coalesce(a.value,
 FROM days d LEFT JOIN signups s USING(activity_date) LEFT JOIN activity a USING(activity_date) LEFT JOIN attempts_by_day t USING(activity_date) ORDER BY d.activity_date;
 
 -- name: AdminContentBreakdown :many
-SELECT kind,status,count(*)::integer AS count FROM managed_content GROUP BY kind,status ORDER BY kind,status;
+SELECT kind,status,count(*)::integer AS count FROM managed_content
+WHERE centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
+GROUP BY kind,status ORDER BY kind,status;
 
 -- name: ListAdminStudents :many
 SELECT u.id,
@@ -73,5 +75,6 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) telegram ON true
 WHERE u.deleted_at IS NULL
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
 ORDER BY lower(u.display_name), u.id
 LIMIT 500;

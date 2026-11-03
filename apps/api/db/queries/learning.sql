@@ -66,10 +66,14 @@ SELECT c.user_id, i.provider_subject FROM claimed c JOIN user_identities i ON i.
 UPDATE study_reminders SET enabled = false WHERE user_id = $1;
 
 -- name: ListContentDrafts :many
-SELECT id, exam_id, data, access_scope, owner_user_id, updated_at FROM content_drafts ORDER BY updated_at DESC LIMIT 100;
+SELECT id, exam_id, data, access_scope, owner_user_id, updated_at FROM content_drafts
+WHERE centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
+ORDER BY updated_at DESC LIMIT 100;
 
 -- name: CreateContentDraft :one
-INSERT INTO content_drafts(admin_author_id,data,access_scope,owner_user_id) VALUES ($1,$2,$3,$4) RETURNING id;
+INSERT INTO content_drafts(admin_author_id,data,access_scope,owner_user_id,centre_id)
+VALUES (sqlc.arg(admin_author_id),sqlc.arg(data),sqlc.arg(access_scope),sqlc.arg(owner_user_id),
+ (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_author_id))) RETURNING id;
 
 -- name: UpdateContentDraft :one
 UPDATE content_drafts SET data=$2,access_scope=$3,owner_user_id=$4,updated_at=now() WHERE id=$1 RETURNING id;
@@ -81,7 +85,9 @@ SELECT * FROM content_drafts WHERE id = $1 FOR UPDATE;
 UPDATE content_drafts SET exam_id = $2 WHERE id = $1;
 
 -- name: CreateContentExam :one
-INSERT INTO exams(slug,created_by_admin,access_scope,owner_user_id) VALUES ($1,$2,$3,$4) RETURNING id;
+INSERT INTO exams(slug,created_by_admin,access_scope,owner_user_id,centre_id)
+VALUES (sqlc.arg(slug),sqlc.arg(created_by_admin),sqlc.arg(access_scope),sqlc.arg(owner_user_id),
+ (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(created_by_admin))) RETURNING id;
 
 -- name: UpdateContentExamAccess :exec
 UPDATE exams SET access_scope=$2, owner_user_id=$3 WHERE id=$1;
@@ -110,8 +116,10 @@ INSERT INTO accepted_answers(question_id,value,position) VALUES ($1,$2,$3);
 INSERT INTO band_conversions(exam_version_id,minimum_raw_score,band) VALUES ($1,$2,$3);
 
 -- name: CreateContentImport :one
-INSERT INTO content_imports(admin_author_id,filename,size_bytes,sha256,requested_skills,model,provider_file_uri,access_scope,owner_user_id)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id;
+INSERT INTO content_imports(admin_author_id,filename,size_bytes,sha256,requested_skills,model,provider_file_uri,access_scope,owner_user_id,centre_id)
+VALUES (sqlc.arg(admin_author_id),sqlc.arg(filename),sqlc.arg(size_bytes),sqlc.arg(sha256),sqlc.arg(requested_skills),
+ sqlc.arg(model),sqlc.arg(provider_file_uri),sqlc.arg(access_scope),sqlc.arg(owner_user_id),
+ (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_author_id))) RETURNING id;
 
 -- name: ListContentImports :many
 SELECT id,filename,size_bytes,sha256,requested_skills,status,model,progress_current,progress_total,draft_ids,warnings,error_message,access_scope,owner_user_id,created_at,updated_at,completed_at

@@ -155,7 +155,9 @@ func (q *Queries) CreateContentBand(ctx context.Context, arg CreateContentBandPa
 }
 
 const createContentDraft = `-- name: CreateContentDraft :one
-INSERT INTO content_drafts(admin_author_id,data,access_scope,owner_user_id) VALUES ($1,$2,$3,$4) RETURNING id
+INSERT INTO content_drafts(admin_author_id,data,access_scope,owner_user_id,centre_id)
+VALUES ($1,$2,$3,$4,
+ (SELECT a.centre_id FROM admins a WHERE a.id = $1)) RETURNING id
 `
 
 type CreateContentDraftParams struct {
@@ -178,7 +180,9 @@ func (q *Queries) CreateContentDraft(ctx context.Context, arg CreateContentDraft
 }
 
 const createContentExam = `-- name: CreateContentExam :one
-INSERT INTO exams(slug,created_by_admin,access_scope,owner_user_id) VALUES ($1,$2,$3,$4) RETURNING id
+INSERT INTO exams(slug,created_by_admin,access_scope,owner_user_id,centre_id)
+VALUES ($1,$2,$3,$4,
+ (SELECT a.centre_id FROM admins a WHERE a.id = $2)) RETURNING id
 `
 
 type CreateContentExamParams struct {
@@ -201,8 +205,10 @@ func (q *Queries) CreateContentExam(ctx context.Context, arg CreateContentExamPa
 }
 
 const createContentImport = `-- name: CreateContentImport :one
-INSERT INTO content_imports(admin_author_id,filename,size_bytes,sha256,requested_skills,model,provider_file_uri,access_scope,owner_user_id)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id
+INSERT INTO content_imports(admin_author_id,filename,size_bytes,sha256,requested_skills,model,provider_file_uri,access_scope,owner_user_id,centre_id)
+VALUES ($1,$2,$3,$4,$5,
+ $6,$7,$8,$9,
+ (SELECT a.centre_id FROM admins a WHERE a.id = $1)) RETURNING id
 `
 
 type CreateContentImportParams struct {
@@ -530,7 +536,9 @@ func (q *Queries) GetWorkspace(ctx context.Context, arg GetWorkspaceParams) ([]b
 }
 
 const listContentDrafts = `-- name: ListContentDrafts :many
-SELECT id, exam_id, data, access_scope, owner_user_id, updated_at FROM content_drafts ORDER BY updated_at DESC LIMIT 100
+SELECT id, exam_id, data, access_scope, owner_user_id, updated_at FROM content_drafts
+WHERE centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $1)
+ORDER BY updated_at DESC LIMIT 100
 `
 
 type ListContentDraftsRow struct {
@@ -542,8 +550,8 @@ type ListContentDraftsRow struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
-func (q *Queries) ListContentDrafts(ctx context.Context) ([]ListContentDraftsRow, error) {
-	rows, err := q.db.Query(ctx, listContentDrafts)
+func (q *Queries) ListContentDrafts(ctx context.Context, adminID pgtype.UUID) ([]ListContentDraftsRow, error) {
+	rows, err := q.db.Query(ctx, listContentDrafts, adminID)
 	if err != nil {
 		return nil, err
 	}

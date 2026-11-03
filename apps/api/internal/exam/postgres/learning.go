@@ -119,8 +119,12 @@ func (r *Repository) SaveReminder(ctx context.Context, u string, v app.Reminder)
 	}
 	return r.queries.SaveReminder(ctx, db.SaveReminderParams{UserID: uid, Enabled: v.Enabled, LocalTime: v.LocalTime, Timezone: v.Timezone})
 }
-func (r *Repository) ListDrafts(ctx context.Context) ([]app.Draft, error) {
-	rows, e := r.queries.ListContentDrafts(ctx)
+func (r *Repository) ListDrafts(ctx context.Context, adminID string) ([]app.Draft, error) {
+	a, e := parseUUID(adminID)
+	if e != nil {
+		return nil, e
+	}
+	rows, e := r.queries.ListContentDrafts(ctx, a)
 	if e != nil {
 		return nil, e
 	}
