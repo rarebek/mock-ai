@@ -78,7 +78,8 @@ SELECT
     u.email_verified_at,
     u.created_at,
     u.updated_at,
-    u.deleted_at
+    u.deleted_at,
+    u.centre_id
 FROM sessions s
 JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = $1

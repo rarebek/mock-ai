@@ -137,8 +137,53 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		respond(w, 200, student)
 	})))
+	// Learning centres. Only a platform administrator reaches these; a centre's
+	// own administrator is scoped to their centre everywhere else.
+	mux.Handle("GET /api/v1/admin/centres", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, e := h.service.ListCentres(r.Context(), AdminFromContext(r.Context()))
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"centres": v})
+	})))
+	mux.Handle("POST /api/v1/admin/centres", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Name          string `json:"name"`
+			Slug          string `json:"slug"`
+			IncludeGlobal *bool  `json:"include_global"`
+		}
+		if !decode(w, r, &input) {
+			return
+		}
+		// A centre that forgets to say otherwise gets the global library, so
+		// its students open a working app rather than an empty one.
+		includeGlobal := input.IncludeGlobal == nil || *input.IncludeGlobal
+		v, e := h.service.CreateCentre(r.Context(), AdminFromContext(r.Context()), input.Name, input.Slug, includeGlobal)
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 201, map[string]any{"centre": v})
+	})))
+	mux.Handle("PUT /api/v1/admin/centres/{centre_id}", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			Name          string `json:"name"`
+			IncludeGlobal bool   `json:"include_global"`
+			Disabled      bool   `json:"disabled"`
+		}
+		if !decode(w, r, &input) {
+			return
+		}
+		v, e := h.service.UpdateCentre(r.Context(), AdminFromContext(r.Context()), r.PathValue("centre_id"), input.Name, input.IncludeGlobal, input.Disabled)
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"centre": v})
+	})))
 	mux.Handle("GET /api/v1/admin/managed-content", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		v, e := h.service.ListContent(r.Context(), r.URL.Query().Get("kind"))
+		v, e := h.service.ListContent(r.Context(), AdminFromContext(r.Context()).ID, r.URL.Query().Get("kind"))
 		if e != nil {
 			fail(w, 422, e.Error())
 			return
@@ -148,7 +193,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/admin/managed-content", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h.saveContent(w, r, false) })))
 	mux.Handle("PUT /api/v1/admin/managed-content/{content_id}", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h.saveContent(w, r, true) })))
 	mux.Handle("DELETE /api/v1/admin/managed-content/{content_id}", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if e := h.service.DeleteContent(r.Context(), r.PathValue("content_id")); e != nil {
+		if e := h.service.DeleteContent(r.Context(), AdminFromContext(r.Context()).ID, r.PathValue("content_id")); e != nil {
 			if errors.Is(e, app.ErrContentNotFound) {
 				fail(w, 404, e.Error())
 			} else {
@@ -201,4 +246,28 @@ func (h *Handler) saveContent(w http.ResponseWriter, r *http.Request, update boo
 		status = 201
 	}
 	respond(w, status, saved)
+}
+
+// decode reads a small JSON body, answering the client itself when it cannot.
+func decode(w http.ResponseWriter, r *http.Request, into any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4000))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(into) != nil {
+		fail(w, 400, "Invalid request")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) failCentre(w http.ResponseWriter, e error) {
+	switch {
+	case errors.Is(e, app.ErrNotPlatformAdmin):
+		fail(w, 403, e.Error())
+	case errors.Is(e, app.ErrInvalidCentre), errors.Is(e, app.ErrCentreTaken):
+		fail(w, 422, e.Error())
+	case errors.Is(e, app.ErrCentreNotFound):
+		fail(w, 404, e.Error())
+	default:
+		fail(w, 500, "Learning centre request failed")
+	}
 }

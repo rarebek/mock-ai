@@ -22,6 +22,7 @@ const telegramAPI = "https://api.telegram.org"
 type UserStore interface {
 	EnsureTelegramUser(ctx context.Context, user telegram.User, rawProfile []byte) (domain.User, bool, error)
 	IssueLoginLink(ctx context.Context, userID string) (string, time.Time, error)
+	JoinCentre(ctx context.Context, userID, joinCode string) (domain.Centre, bool, error)
 }
 
 type Bot struct {
@@ -154,6 +155,19 @@ func (b *Bot) handle(ctx context.Context, item update) error {
 	if name == "" {
 		name = user.DisplayName
 	}
+	// A centre invite attaches the student before anything else, so the first
+	// thing they see is their own centre's name rather than a generic welcome.
+	centre := domain.Centre{}
+	if code, isInvite := strings.CutPrefix(startPayload(item.Message.Text), centrePayloadPrefix); isInvite && code != "" {
+		joined, _, err := b.users.JoinCentre(ctx, user.ID, code)
+		if err != nil {
+			// A bad or retired invite still leaves a working global account, so
+			// this is worth recording but not worth failing the student over.
+			b.logger.Warn("join learning centre", "error", err)
+		} else {
+			centre = joined
+		}
+	}
 	// Receiving a private message from this account is the proof of identity,
 	// so the link below is the whole login. Failing to mint one must not cost
 	// the student the welcome message or the mini app button.
@@ -169,6 +183,9 @@ func (b *Bot) handle(ctx context.Context, item update) error {
 	text := fmt.Sprintf("Hello, %s! 👋\n\nWelcome back to mock-ai. Continue your IELTS practice when you're ready.", name)
 	if created {
 		text = fmt.Sprintf("Welcome to mock-ai, %s! 👋\n\nYour student profile is ready. Practice IELTS Reading, Listening, Writing and Speaking, take mock exams, and track your progress.", name)
+	}
+	if centre.Name != "" {
+		text = fmt.Sprintf("Welcome to %s on mock-ai, %s! 👋\n\nYou will practice with the material your centre has prepared for you.", centre.Name, name)
 	}
 	return b.call(ctx, "sendMessage", map[string]any{
 		"chat_id":      item.Message.Chat.ID,
@@ -244,6 +261,19 @@ func isStartCommand(text string) bool {
 	command := strings.ToLower(strings.SplitN(fields[0], "@", 2)[0])
 	return command == "/start"
 }
+
+// startPayload reads the deep-link argument Telegram appends to /start. A
+// learning centre's invite is t.me/<bot>?start=c_<join code>, which arrives
+// here as "/start c_<join code>".
+func startPayload(text string) string {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[1]
+}
+
+const centrePayloadPrefix = "c_"
 
 func wait(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)

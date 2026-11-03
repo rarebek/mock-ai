@@ -1,0 +1,11 @@
+DROP INDEX IF EXISTS admins_centre_idx;
+ALTER TABLE admins DROP COLUMN IF EXISTS centre_id;
+DROP INDEX IF EXISTS managed_content_centre_idx;
+DROP INDEX IF EXISTS exams_centre_idx;
+ALTER TABLE content_imports DROP COLUMN IF EXISTS centre_id;
+ALTER TABLE content_drafts DROP COLUMN IF EXISTS centre_id;
+ALTER TABLE managed_content DROP COLUMN IF EXISTS centre_id;
+ALTER TABLE exams DROP COLUMN IF EXISTS centre_id;
+DROP INDEX IF EXISTS users_centre_idx;
+ALTER TABLE users DROP COLUMN IF EXISTS centre_id;
+DROP TABLE IF EXISTS centres;

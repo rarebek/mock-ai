@@ -52,15 +52,15 @@ func (r *Repository) Available(ctx context.Context) (bool, error) {
 	}
 	return r.Q.WritingKeyAvailable(ctx)
 }
-func (r *Repository) Plan(ctx context.Context, id string) (string, []d.Turn, error) {
+func (r *Repository) Plan(ctx context.Context, u, id string) (string, []d.Turn, error) {
 	if id == "" {
-		v, e := r.Q.RandomSpeakingPlan(ctx)
+		v, e := r.Q.RandomSpeakingPlan(ctx, uuid(u))
 		if e != nil {
 			return "", nil, d.ErrUnavailable
 		}
 		return d.ParsePlan(v.Title, v.Data)
 	}
-	v, e := r.Q.PublishedSpeakingPlan(ctx, uuid(id))
+	v, e := r.Q.PublishedSpeakingPlan(ctx, db.PublishedSpeakingPlanParams{ID: uuid(id), UserID: uuid(u)})
 	if e != nil {
 		return "", nil, d.ErrUnavailable
 	}

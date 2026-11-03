@@ -12,6 +12,15 @@ type User struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// Centre is a learning centre: a tenant whose content is private to its own
+// students. A student with no centre sees the global library.
+type Centre struct {
+	ID            string `json:"id"`
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	IncludeGlobal bool   `json:"include_global"`
+}
+
 type ExternalProfile struct {
 	Provider      string
 	Subject       string

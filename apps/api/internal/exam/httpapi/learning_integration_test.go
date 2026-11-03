@@ -469,6 +469,177 @@ func TestLearningIntegration(t *testing.T) {
 	if reset.Stats.WeekPoints != 0 || len(reset.Board) != 0 || reset.Stats.Questions != 1 {
 		t.Fatalf("week reset must preserve lifetime progress: %+v", reset)
 	}
+	// ── Learning centres ──────────────────────────────────────────────────
+	// The promise of the tenant model is that one centre's material never
+	// reaches another centre's students. That is enforced in SQL, which means
+	// it is only really tested against Postgres.
+	ctx := context.Background()
+	var centreA, centreB string
+	if e = pool.QueryRow(ctx, "INSERT INTO centres(slug,name,join_code) VALUES('alpha','Alpha Centre','AAAAAAAAAAAAAAAA') RETURNING id::text").Scan(&centreA); e != nil {
+		t.Fatal(e)
+	}
+	// Beta runs a closed curriculum: its students see its material and nothing else.
+	if e = pool.QueryRow(ctx, "INSERT INTO centres(slug,name,join_code,include_global) VALUES('beta','Beta Centre','BBBBBBBBBBBBBBBB',false) RETURNING id::text").Scan(&centreB); e != nil {
+		t.Fatal(e)
+	}
+	for _, row := range []struct{ slug, centre string }{{"alpha-only", centreA}, {"beta-only", centreB}} {
+		if _, e = pool.Exec(ctx, "INSERT INTO managed_content(kind,slug,title,status,data,centre_id) VALUES('vocabulary',$1,$1,'published','{}'::jsonb,$2)", row.slug, row.centre); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if _, e = pool.Exec(ctx, "INSERT INTO managed_content(kind,slug,title,status,data) VALUES('vocabulary','global-only','global-only','published','{}'::jsonb)"); e != nil {
+		t.Fatal(e)
+	}
+
+	alphaStudent, alphaSession := signIn(90101, "Alpha Student")
+	betaStudent, betaSession := signIn(90102, "Beta Student")
+	_, globalSession := signIn(90103, "Global Student")
+	alphaCookie := &http.Cookie{Name: "mock_ai_session", Value: alphaSession.Token}
+	betaCookie := &http.Cookie{Name: "mock_ai_session", Value: betaSession.Token}
+	globalCookie := &http.Cookie{Name: "mock_ai_session", Value: globalSession.Token}
+	// Students join through the code the bot deep-links with.
+	if _, joined, err := auth.JoinCentre(ctx, alphaStudent.ID, "AAAAAAAAAAAAAAAA"); err != nil || !joined {
+		t.Fatal("alpha student did not join", err)
+	}
+	if _, joined, err := auth.JoinCentre(ctx, betaStudent.ID, "BBBBBBBBBBBBBBBB"); err != nil || !joined {
+		t.Fatal("beta student did not join", err)
+	}
+	// Joining is one-way: a second invite must not move a student.
+	if _, joined, err := auth.JoinCentre(ctx, alphaStudent.ID, "BBBBBBBBBBBBBBBB"); err != nil || joined {
+		t.Fatal("a stray invite moved a student out of their centre", err)
+	}
+
+	vocabulary := func(c *http.Cookie) map[string]bool {
+		t.Helper()
+		body := request("GET", "/api/v1/content?kind=vocabulary", nil, c, 200)
+		var items []struct{ Slug string }
+		json.Unmarshal(body["items"], &items)
+		seen := map[string]bool{}
+		for _, v := range items {
+			seen[v.Slug] = true
+		}
+		return seen
+	}
+	for _, check := range []struct {
+		who    string
+		cookie *http.Cookie
+		want   []string
+		deny   []string
+	}{
+		{"alpha student", alphaCookie, []string{"alpha-only", "global-only"}, []string{"beta-only"}},
+		{"beta student", betaCookie, []string{"beta-only"}, []string{"alpha-only", "global-only"}},
+		{"global student", globalCookie, []string{"global-only"}, []string{"alpha-only", "beta-only"}},
+	} {
+		seen := vocabulary(check.cookie)
+		for _, slug := range check.want {
+			if !seen[slug] {
+				t.Fatalf("%s cannot see %q", check.who, slug)
+			}
+		}
+		for _, slug := range check.deny {
+			if seen[slug] {
+				t.Fatalf("%s can see %q, which belongs to another library", check.who, slug)
+			}
+		}
+	}
+
+	// An exam moved into a centre leaves the global library the same moment.
+	var movedExam string
+	if e = pool.QueryRow(ctx, "UPDATE exams SET centre_id=$1 WHERE id=(SELECT e.id FROM exams e JOIN exam_versions v ON v.exam_id=e.id WHERE v.status='published' AND v.purpose='mock' AND e.centre_id IS NULL LIMIT 1) RETURNING id::text", centreB).Scan(&movedExam); e != nil {
+		t.Fatal(e)
+	}
+	examIDs := func(c *http.Cookie) map[string]bool {
+		t.Helper()
+		body := request("GET", "/api/v1/exams", nil, c, 200)
+		var items []struct{ ID string }
+		json.Unmarshal(body["exams"], &items)
+		seen := map[string]bool{}
+		for _, v := range items {
+			seen[v.ID] = true
+		}
+		return seen
+	}
+	if !examIDs(betaCookie)[movedExam] {
+		t.Fatal("a centre's own exam is missing from its students' catalogue")
+	}
+	for who, c := range map[string]*http.Cookie{"alpha student": alphaCookie, "global student": globalCookie, "unattached student": cookie} {
+		if examIDs(c)[movedExam] {
+			t.Fatalf("%s can see another centre's exam", who)
+		}
+		// Not just hidden from the list: unreachable by direct id.
+		request("GET", "/api/v1/exams/"+movedExam, nil, c, 404)
+	}
+
+	// A centre's administrator is confined to their own centre.
+	if _, e = adminService.Create(ctx, "alpha-admin@example.com", "Alpha Admin", "alpha-admin-password"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = pool.Exec(ctx, "UPDATE admins SET centre_id=$1 WHERE email='alpha-admin@example.com'", centreA); e != nil {
+		t.Fatal(e)
+	}
+	adminLogin := func(email, password string) *http.Cookie {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/api/v1/admin/auth/login", strings.NewReader(`{"email":"`+email+`","password":"`+password+`"}`))
+		req.Header.Set("Origin", "http://localhost")
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		if rr.Code != 200 {
+			t.Fatalf("admin login failed for %s: %d %s", email, rr.Code, rr.Body.String())
+		}
+		return rr.Result().Cookies()[0]
+	}
+	// The editor used earlier was disabled and logged out by then, so this
+	// block needs its own platform administrator to compare against.
+	if _, e = adminService.Create(ctx, "platform@example.com", "Platform", "platform-admin-password"); e != nil {
+		t.Fatal(e)
+	}
+	alphaAdmin := adminLogin("alpha-admin@example.com", "alpha-admin-password")
+	platformAdmin := adminLogin("platform@example.com", "platform-admin-password")
+	adminSlugs := func(c *http.Cookie) map[string]bool {
+		t.Helper()
+		body := request("GET", "/api/v1/admin/managed-content?kind=vocabulary", nil, c, 200)
+		var items []struct{ Slug string }
+		json.Unmarshal(body["items"], &items)
+		seen := map[string]bool{}
+		for _, v := range items {
+			seen[v.Slug] = true
+		}
+		return seen
+	}
+	seen := adminSlugs(alphaAdmin)
+	if !seen["alpha-only"] || seen["beta-only"] || seen["global-only"] {
+		t.Fatalf("a centre administrator sees content outside their centre: %v", seen)
+	}
+	if platform := adminSlugs(platformAdmin); !platform["global-only"] || platform["alpha-only"] || platform["beta-only"] {
+		t.Fatalf("the platform administrator's library is not the global one: %v", platform)
+	}
+	// Deleting across centres must miss rather than succeed.
+	var betaContent string
+	if e = pool.QueryRow(ctx, "SELECT id::text FROM managed_content WHERE slug='beta-only'").Scan(&betaContent); e != nil {
+		t.Fatal(e)
+	}
+	request("DELETE", "/api/v1/admin/managed-content/"+betaContent, nil, alphaAdmin, 404)
+	var survives bool
+	if e = pool.QueryRow(ctx, "SELECT exists(SELECT 1 FROM managed_content WHERE slug='beta-only')").Scan(&survives); e != nil || !survives {
+		t.Fatal("a centre administrator deleted another centre's content")
+	}
+	// Only a platform administrator manages centres at all.
+	request("GET", "/api/v1/admin/centres", nil, alphaAdmin, 403)
+	request("POST", "/api/v1/admin/centres", map[string]any{"name": "Rogue", "slug": "rogue"}, alphaAdmin, 403)
+	created := request("POST", "/api/v1/admin/centres", map[string]any{"name": "Gamma Centre", "slug": "gamma"}, platformAdmin, 201)
+	var gamma struct {
+		ID            string `json:"id"`
+		JoinCode      string `json:"join_code"`
+		IncludeGlobal bool   `json:"include_global"`
+	}
+	json.Unmarshal(created["centre"], &gamma)
+	if len(gamma.JoinCode) < 16 || !gamma.IncludeGlobal {
+		t.Fatalf("a new centre needs an unguessable join code and the global library by default: %+v", gamma)
+	}
+	request("POST", "/api/v1/admin/centres", map[string]any{"name": "Duplicate", "slug": "gamma"}, platformAdmin, 422)
+	request("POST", "/api/v1/admin/centres", map[string]any{"name": "", "slug": "ok-slug"}, platformAdmin, 422)
+	t.Log("learning centres: per-centre libraries, closed curricula, one-way joining, admin confinement and platform-only centre management passed")
+
 	t.Log("community privacy, opt-out, validation, ties, duplicate prevention, empty mocks and UTC reset passed")
 	request("GET", "/api/v1/writing/submissions", nil, nil, 401)
 	request("GET", "/api/v1/writing/submissions", nil, adminCookie, 401)

@@ -21,9 +21,11 @@ var (
 	ErrTelegramDisabled  = errors.New("Telegram authentication is not configured")
 	ErrInvalidLoginLink  = errors.New("this login link has expired or has already been used")
 	ErrTooManyLoginLinks = errors.New("too many login links requested; try again later")
+	ErrUnknownCentre     = errors.New("that learning centre link is not valid")
 )
 
 type Repository interface {
+	JoinCentre(ctx context.Context, userID, joinCode string) (domain.Centre, bool, error)
 	IssueLoginLink(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time) error
 	RecentLoginLinks(ctx context.Context, userID string, since time.Time) (int64, error)
 	ConsumeLoginLink(ctx context.Context, tokenHash []byte) (domain.User, error)
@@ -62,6 +64,21 @@ const loginLinkTTL = 15 * time.Minute
 // loginLinkBurst caps how many links one account can mint in an hour, so
 // hammering /start cannot fill the table or paper a chat with live tokens.
 const loginLinkBurst = 10
+
+// JoinCentre attaches a student to a centre from a Telegram deep-link payload.
+// An unknown or disabled code is not an error the student should see as a
+// failure: they are simply a global student, which is a working account.
+func (s *Service) JoinCentre(ctx context.Context, userID, joinCode string) (domain.Centre, bool, error) {
+	joinCode = strings.TrimSpace(joinCode)
+	if joinCode == "" {
+		return domain.Centre{}, false, ErrInvalidInput
+	}
+	centre, joined, err := s.repository.JoinCentre(ctx, userID, joinCode)
+	if errors.Is(err, identitypostgres.ErrNotFound) {
+		return domain.Centre{}, false, ErrUnknownCentre
+	}
+	return centre, joined, err
+}
 
 // IssueLoginLink mints a one-time login token for a user. The caller is the
 // Telegram bot, which has already proved the account by receiving a private

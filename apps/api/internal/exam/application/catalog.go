@@ -18,11 +18,11 @@ type ManagedContent struct {
 	Data      json.RawMessage `json:"data"`
 }
 
-func (s *Service) ListPublishedContent(ctx context.Context, kind string) ([]ManagedContent, error) {
+func (s *Service) ListPublishedContent(ctx context.Context, u, kind string) ([]ManagedContent, error) {
 	if !isPublishedContentKind(kind) {
 		return nil, ErrNotFound
 	}
-	return s.repository.ListPublishedContent(ctx, kind)
+	return s.repository.ListPublishedContent(ctx, u, kind)
 }
 
 func isPublishedContentKind(kind string) bool {

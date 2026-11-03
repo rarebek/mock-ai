@@ -16,10 +16,21 @@ import (
 )
 
 type userStoreStub struct {
-	created   bool
-	calls     int
-	links     int
-	linkError error
+	created    bool
+	calls      int
+	links      int
+	linkError  error
+	joinedCode string
+	centreName string
+	joinError  error
+}
+
+func (s *userStoreStub) JoinCentre(_ context.Context, userID, joinCode string) (domain.Centre, bool, error) {
+	s.joinedCode = joinCode
+	if s.joinError != nil {
+		return domain.Centre{}, false, s.joinError
+	}
+	return domain.Centre{ID: "centre-1", Name: s.centreName, Slug: "centre"}, true, nil
 }
 
 func (s *userStoreStub) EnsureTelegramUser(_ context.Context, user telegram.User, raw []byte) (domain.User, bool, error) {
@@ -191,5 +202,54 @@ func TestHandleStartSurvivesLoginLinkFailure(t *testing.T) {
 	}
 	if text, _ := send["text"].(string); !strings.Contains(text, "Donik") {
 		t.Fatalf("greeting lost: %q", text)
+	}
+}
+
+// A centre's invite is t.me/<bot>?start=c_<join code>. Starting the bot
+// through one attaches the student and greets them with their centre's name;
+// an invite that no longer works still leaves them a usable global account.
+func TestHandleStartJoinsALearningCentreFromTheInvite(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		payload   string
+		joinError error
+		centre    string
+		wantCode  string
+		wantWords string
+	}{
+		{name: "centre invite", payload: " c_JOIN1234567890AB", wantCode: "JOIN1234567890AB", centre: "Oxford Study Centre", wantWords: "Welcome to Oxford Study Centre on mock-ai"},
+		{name: "no invite", payload: "", wantCode: "", wantWords: "Your student profile is ready"},
+		{name: "retired invite", payload: " c_GONE123456789012", joinError: io.ErrUnexpectedEOF, wantCode: "GONE123456789012", wantWords: "Your student profile is ready"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &userStoreStub{created: true, centreName: test.centre, joinError: test.joinError}
+			var requests []map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				requests = append(requests, body)
+				_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+			}))
+			defer server.Close()
+			bot, err := New("test-token", "https://mock.web.chessinsight.uz", "https://mock.web.chessinsight.uz", store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err != nil {
+				t.Fatalf("new bot: %v", err)
+			}
+			bot.apiBase = server.URL
+			if err := bot.handle(context.Background(), update{Message: &message{
+				Text: "/start" + test.payload, Chat: chat{ID: 7, Type: "private"},
+				From: telegram.User{ID: 42, FirstName: "Donik"},
+			}}); err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+			if store.joinedCode != test.wantCode {
+				t.Fatalf("join code = %q, want %q", store.joinedCode, test.wantCode)
+			}
+			text, _ := requests[len(requests)-1]["text"].(string)
+			if !strings.Contains(text, test.wantWords) {
+				t.Fatalf("greeting %q does not contain %q", text, test.wantWords)
+			}
+		})
 	}
 }

@@ -162,7 +162,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (display_name, avatar_url, email)
 VALUES ($1, $2, $3)
-RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at
+RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at, centre_id
 `
 
 type CreateUserParams struct {
@@ -183,6 +183,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
@@ -190,7 +191,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 const createVerifiedUser = `-- name: CreateVerifiedUser :one
 INSERT INTO users (display_name, avatar_url, email, email_verified_at)
 VALUES ($1, $2, $3, now())
-RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at
+RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at, centre_id
 `
 
 type CreateVerifiedUserParams struct {
@@ -211,12 +212,13 @@ func (q *Queries) CreateVerifiedUser(ctx context.Context, arg CreateVerifiedUser
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at FROM users
+SELECT id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at, centre_id FROM users
 WHERE lower(email) = lower($1) AND deleted_at IS NULL
 `
 
@@ -232,12 +234,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (User, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at FROM users
+SELECT id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at, centre_id FROM users
 WHERE id = $1 AND deleted_at IS NULL
 `
 
@@ -253,12 +256,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
 
 const getUserByIdentity = `-- name: GetUserByIdentity :one
-SELECT u.id, u.display_name, u.avatar_url, u.email, u.email_verified_at, u.created_at, u.updated_at, u.deleted_at
+SELECT u.id, u.display_name, u.avatar_url, u.email, u.email_verified_at, u.created_at, u.updated_at, u.deleted_at, u.centre_id
 FROM users u
 JOIN user_identities i ON i.user_id = u.id
 WHERE i.provider = $1
@@ -283,6 +287,7 @@ func (q *Queries) GetUserByIdentity(ctx context.Context, arg GetUserByIdentityPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
@@ -296,7 +301,8 @@ SELECT
     u.email_verified_at,
     u.created_at,
     u.updated_at,
-    u.deleted_at
+    u.deleted_at,
+    u.centre_id
 FROM sessions s
 JOIN users u ON u.id = s.user_id
 WHERE s.token_hash = $1
@@ -317,6 +323,7 @@ func (q *Queries) GetUserBySession(ctx context.Context, tokenHash []byte) (User,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
@@ -352,7 +359,7 @@ UPDATE users
 SET email_verified_at = COALESCE(email_verified_at, now()),
     updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at
+RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at, centre_id
 `
 
 func (q *Queries) MarkEmailVerified(ctx context.Context, id pgtype.UUID) (User, error) {
@@ -367,6 +374,7 @@ func (q *Queries) MarkEmailVerified(ctx context.Context, id pgtype.UUID) (User, 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
@@ -401,7 +409,7 @@ SET display_name = $2,
     avatar_url = COALESCE($3, avatar_url),
     updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at
+RETURNING id, display_name, avatar_url, email, email_verified_at, created_at, updated_at, deleted_at, centre_id
 `
 
 type UpdateExternalProfileParams struct {
@@ -422,6 +430,7 @@ func (q *Queries) UpdateExternalProfile(ctx context.Context, arg UpdateExternalP
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.CentreID,
 	)
 	return i, err
 }

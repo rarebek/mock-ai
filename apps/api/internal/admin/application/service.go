@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var ErrUnauthorized = errors.New("invalid admin credentials or temporarily unavailable; try again later")
@@ -26,7 +27,17 @@ type Admin struct {
 	ID          string `json:"id"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
+	// CentreID is empty for a platform administrator, who owns the global
+	// library and creates centres. Otherwise this administrator can only see
+	// and change their own centre's content.
+	CentreID   string `json:"centre_id,omitempty"`
+	CentreName string `json:"centre_name,omitempty"`
 }
+
+// Platform reports whether this administrator owns the platform rather than a
+// single centre.
+func (a Admin) Platform() bool { return a.CentreID == "" }
+
 type Student struct {
 	ID               string     `json:"id"`
 	DisplayName      string     `json:"display_name"`
@@ -132,10 +143,13 @@ type Repository interface {
 	Session(context.Context, string) (Admin, error)
 	DeleteSession(context.Context, string) error
 	Dashboard(context.Context) (Dashboard, error)
-	ListContent(context.Context, string) ([]ManagedContent, error)
+	ListCentres(context.Context) ([]Centre, error)
+	CreateCentre(context.Context, string, string, string, bool) (Centre, error)
+	UpdateCentre(context.Context, string, string, bool, bool) (Centre, error)
+	ListContent(context.Context, string, string) ([]ManagedContent, error)
 	CreateContent(context.Context, string, ManagedContent) (ManagedContent, error)
 	UpdateContent(context.Context, string, ManagedContent) (ManagedContent, error)
-	DeleteContent(context.Context, string) error
+	DeleteContent(context.Context, string, string) error
 	ListStudents(context.Context) ([]Student, error)
 	StudentProgress(context.Context, string) (StudentProgress, error)
 }
@@ -212,11 +226,86 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 func (s *Service) Dashboard(ctx context.Context) (Dashboard, error) {
 	return s.repository.Dashboard(ctx)
 }
-func (s *Service) ListContent(ctx context.Context, kind string) ([]ManagedContent, error) {
+
+// Centre is a learning centre: a tenant whose uploaded content is private to
+// its own students.
+type Centre struct {
+	ID            string `json:"id"`
+	Slug          string `json:"slug"`
+	Name          string `json:"name"`
+	JoinCode      string `json:"join_code"`
+	IncludeGlobal bool   `json:"include_global"`
+	Disabled      bool   `json:"disabled"`
+	Students      int64  `json:"students"`
+	Exams         int64  `json:"exams"`
+}
+
+var (
+	ErrNotPlatformAdmin = errors.New("only a platform administrator can manage learning centres")
+	ErrInvalidCentre    = errors.New("a centre needs a name and a short url-safe slug")
+	ErrCentreTaken      = errors.New("that centre slug is already in use")
+	ErrCentreNotFound   = errors.New("learning centre not found")
+)
+
+var centreSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
+
+func (s *Service) ListCentres(ctx context.Context, actor Admin) ([]Centre, error) {
+	if !actor.Platform() {
+		return nil, ErrNotPlatformAdmin
+	}
+	return s.repository.ListCentres(ctx)
+}
+
+// CreateCentre adds a tenant. The join code is generated here rather than
+// chosen: it travels in a Telegram deep link and in chat messages, so it has
+// to be unguessable, and letting a human pick it guarantees it will not be.
+func (s *Service) CreateCentre(ctx context.Context, actor Admin, name, slug string, includeGlobal bool) (Centre, error) {
+	if !actor.Platform() {
+		return Centre{}, ErrNotPlatformAdmin
+	}
+	name = strings.TrimSpace(name)
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if name == "" || utf8.RuneCountInString(name) > 120 || !centreSlug.MatchString(slug) {
+		return Centre{}, ErrInvalidCentre
+	}
+	code, e := joinCode()
+	if e != nil {
+		return Centre{}, e
+	}
+	return s.repository.CreateCentre(ctx, name, slug, code, includeGlobal)
+}
+
+func (s *Service) UpdateCentre(ctx context.Context, actor Admin, id, name string, includeGlobal, disabled bool) (Centre, error) {
+	if !actor.Platform() {
+		return Centre{}, ErrNotPlatformAdmin
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || utf8.RuneCountInString(name) > 120 {
+		return Centre{}, ErrInvalidCentre
+	}
+	return s.repository.UpdateCentre(ctx, id, name, includeGlobal, disabled)
+}
+
+// joinCode returns 160 bits of randomness in an alphabet without characters a
+// student can confuse when a link is read aloud or retyped.
+func joinCode() (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	raw := make([]byte, 20)
+	if _, e := rand.Read(raw); e != nil {
+		return "", e
+	}
+	out := make([]byte, len(raw))
+	for i, b := range raw {
+		out[i] = alphabet[int(b)%len(alphabet)]
+	}
+	return string(out), nil
+}
+
+func (s *Service) ListContent(ctx context.Context, adminID, kind string) ([]ManagedContent, error) {
 	if kind != "" && !validKinds[kind] {
 		return nil, ErrInvalidContent
 	}
-	return s.repository.ListContent(ctx, kind)
+	return s.repository.ListContent(ctx, adminID, kind)
 }
 func (s *Service) ListStudents(ctx context.Context) ([]Student, error) {
 	return s.repository.ListStudents(ctx)
@@ -240,8 +329,8 @@ func (s *Service) SaveContent(ctx context.Context, adminID string, item ManagedC
 	}
 	return s.repository.UpdateContent(ctx, adminID, item)
 }
-func (s *Service) DeleteContent(ctx context.Context, id string) error {
-	return s.repository.DeleteContent(ctx, id)
+func (s *Service) DeleteContent(ctx context.Context, adminID, id string) error {
+	return s.repository.DeleteContent(ctx, adminID, id)
 }
 
 var validKinds = map[string]bool{"daily_challenge": true, "achievement": true, "vocabulary": true, "writing_prompt": true, "speaking_plan": true}

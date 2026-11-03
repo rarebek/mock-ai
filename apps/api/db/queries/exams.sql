@@ -17,7 +17,15 @@ JOIN questions q ON q.section_id = es.id
 WHERE ev.status = 'published'
   AND ev.purpose = 'mock'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=sqlc.arg(user_id))
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = sqlc.arg(user_id)
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = sqlc.arg(user_id))
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = sqlc.arg(user_id) AND vc.include_global)))))
 GROUP BY e.id, ev.id
 ORDER BY ev.published_at DESC;
 
@@ -39,7 +47,15 @@ WHERE e.id = $1
   AND ev.status = 'published'
   AND ev.purpose = 'mock'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=sqlc.arg(user_id));
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = sqlc.arg(user_id)
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = sqlc.arg(user_id))
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = sqlc.arg(user_id) AND vc.include_global)))));
 
 -- name: ListExamSections :many
 SELECT id, exam_version_id, position, title, instructions, audio_url, passage, source_image_urls
@@ -80,7 +96,15 @@ JOIN exam_versions ev ON ev.id = es.exam_version_id
 JOIN exams e ON e.id = ev.exam_id
 WHERE ev.status = 'published'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=sqlc.arg(user_id))
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = sqlc.arg(user_id)
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = sqlc.arg(user_id))
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = sqlc.arg(user_id) AND vc.include_global)))))
   AND (sqlc.arg(skill)::text = '' OR ev.skill::text = sqlc.arg(skill)::text)
   AND (sqlc.arg(question_type)::text = '' OR q.type::text = sqlc.arg(question_type)::text)
 ORDER BY random()
@@ -96,5 +120,13 @@ JOIN accepted_answers aa ON aa.question_id = q.id
 WHERE q.id = $1
   AND ev.status = 'published'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=sqlc.arg(user_id))
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = sqlc.arg(user_id)
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = sqlc.arg(user_id))
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = sqlc.arg(user_id) AND vc.include_global)))))
 ORDER BY aa.position;

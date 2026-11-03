@@ -12,8 +12,11 @@ import (
 )
 
 const createManagedContent = `-- name: CreateManagedContent :one
-INSERT INTO managed_content(kind,slug,title,summary,status,sort_order,starts_at,ends_at,data,created_by,updated_by)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) RETURNING id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at
+INSERT INTO managed_content(kind,slug,title,summary,status,sort_order,starts_at,ends_at,data,created_by,updated_by,centre_id)
+VALUES($1,$2,$3,$4,$5,$6,
+ $7,$8,$9,$10,$10,
+ (SELECT a.centre_id FROM admins a WHERE a.id = $10))
+RETURNING id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at, centre_id
 `
 
 type CreateManagedContentParams struct {
@@ -58,16 +61,23 @@ func (q *Queries) CreateManagedContent(ctx context.Context, arg CreateManagedCon
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CentreID,
 	)
 	return i, err
 }
 
 const deleteManagedContent = `-- name: DeleteManagedContent :execrows
-DELETE FROM managed_content WHERE id=$1
+DELETE FROM managed_content WHERE managed_content.id=$1
+ AND managed_content.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $2)
 `
 
-func (q *Queries) DeleteManagedContent(ctx context.Context, id pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteManagedContent, id)
+type DeleteManagedContentParams struct {
+	ID      pgtype.UUID `json:"id"`
+	AdminID pgtype.UUID `json:"admin_id"`
+}
+
+func (q *Queries) DeleteManagedContent(ctx context.Context, arg DeleteManagedContentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteManagedContent, arg.ID, arg.AdminID)
 	if err != nil {
 		return 0, err
 	}
@@ -75,13 +85,19 @@ func (q *Queries) DeleteManagedContent(ctx context.Context, id pgtype.UUID) (int
 }
 
 const listManagedContent = `-- name: ListManagedContent :many
-SELECT id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at FROM managed_content
+SELECT id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at, centre_id FROM managed_content
 WHERE ($1::text = '' OR kind = $1)
+  AND centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $2)
 ORDER BY kind, sort_order, updated_at DESC
 `
 
-func (q *Queries) ListManagedContent(ctx context.Context, kind string) ([]ManagedContent, error) {
-	rows, err := q.db.Query(ctx, listManagedContent, kind)
+type ListManagedContentParams struct {
+	Kind    string      `json:"kind"`
+	AdminID pgtype.UUID `json:"admin_id"`
+}
+
+func (q *Queries) ListManagedContent(ctx context.Context, arg ListManagedContentParams) ([]ManagedContent, error) {
+	rows, err := q.db.Query(ctx, listManagedContent, arg.Kind, arg.AdminID)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +120,7 @@ func (q *Queries) ListManagedContent(ctx context.Context, kind string) ([]Manage
 			&i.UpdatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CentreID,
 		); err != nil {
 			return nil, err
 		}
@@ -116,14 +133,23 @@ func (q *Queries) ListManagedContent(ctx context.Context, kind string) ([]Manage
 }
 
 const listPublishedContent = `-- name: ListPublishedContent :many
-SELECT id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at FROM managed_content
+SELECT id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at, centre_id FROM managed_content
 WHERE status='published' AND ($1::text = '' OR kind=$1)
   AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>now())
+  AND (managed_content.centre_id IS NOT DISTINCT FROM (SELECT vme.centre_id FROM users vme WHERE vme.id = $2)
+       OR (managed_content.centre_id IS NULL AND EXISTS (
+             SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+             WHERE vu.id = $2 AND vc.include_global)))
 ORDER BY kind, sort_order, created_at
 `
 
-func (q *Queries) ListPublishedContent(ctx context.Context, kind string) ([]ManagedContent, error) {
-	rows, err := q.db.Query(ctx, listPublishedContent, kind)
+type ListPublishedContentParams struct {
+	Kind   string      `json:"kind"`
+	UserID pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) ListPublishedContent(ctx context.Context, arg ListPublishedContentParams) ([]ManagedContent, error) {
+	rows, err := q.db.Query(ctx, listPublishedContent, arg.Kind, arg.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +172,7 @@ func (q *Queries) ListPublishedContent(ctx context.Context, kind string) ([]Mana
 			&i.UpdatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CentreID,
 		); err != nil {
 			return nil, err
 		}
@@ -159,17 +186,26 @@ func (q *Queries) ListPublishedContent(ctx context.Context, kind string) ([]Mana
 
 const publishedSpeakingPlan = `-- name: PublishedSpeakingPlan :one
 SELECT title,data FROM managed_content
-WHERE id=$1 AND kind='speaking_plan' AND status='published'
+WHERE managed_content.id=$1 AND kind='speaking_plan' AND status='published'
  AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>now())
+  AND (managed_content.centre_id IS NOT DISTINCT FROM (SELECT vme.centre_id FROM users vme WHERE vme.id = $2)
+       OR (managed_content.centre_id IS NULL AND EXISTS (
+             SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+             WHERE vu.id = $2 AND vc.include_global)))
 `
+
+type PublishedSpeakingPlanParams struct {
+	ID     pgtype.UUID `json:"id"`
+	UserID pgtype.UUID `json:"user_id"`
+}
 
 type PublishedSpeakingPlanRow struct {
 	Title string `json:"title"`
 	Data  []byte `json:"data"`
 }
 
-func (q *Queries) PublishedSpeakingPlan(ctx context.Context, id pgtype.UUID) (PublishedSpeakingPlanRow, error) {
-	row := q.db.QueryRow(ctx, publishedSpeakingPlan, id)
+func (q *Queries) PublishedSpeakingPlan(ctx context.Context, arg PublishedSpeakingPlanParams) (PublishedSpeakingPlanRow, error) {
+	row := q.db.QueryRow(ctx, publishedSpeakingPlan, arg.ID, arg.UserID)
 	var i PublishedSpeakingPlanRow
 	err := row.Scan(&i.Title, &i.Data)
 	return i, err
@@ -179,6 +215,10 @@ const randomSpeakingPlan = `-- name: RandomSpeakingPlan :one
 SELECT title,data FROM managed_content
 WHERE kind='speaking_plan' AND status='published'
  AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>now())
+  AND (managed_content.centre_id IS NOT DISTINCT FROM (SELECT vme.centre_id FROM users vme WHERE vme.id = $1)
+       OR (managed_content.centre_id IS NULL AND EXISTS (
+             SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+             WHERE vu.id = $1 AND vc.include_global)))
 ORDER BY random() LIMIT 1
 `
 
@@ -187,21 +227,23 @@ type RandomSpeakingPlanRow struct {
 	Data  []byte `json:"data"`
 }
 
-func (q *Queries) RandomSpeakingPlan(ctx context.Context) (RandomSpeakingPlanRow, error) {
-	row := q.db.QueryRow(ctx, randomSpeakingPlan)
+func (q *Queries) RandomSpeakingPlan(ctx context.Context, userID pgtype.UUID) (RandomSpeakingPlanRow, error) {
+	row := q.db.QueryRow(ctx, randomSpeakingPlan, userID)
 	var i RandomSpeakingPlanRow
 	err := row.Scan(&i.Title, &i.Data)
 	return i, err
 }
 
 const updateManagedContent = `-- name: UpdateManagedContent :one
-UPDATE managed_content SET kind=$2,slug=$3,title=$4,summary=$5,status=$6,sort_order=$7,
- starts_at=$8,ends_at=$9,data=$10,updated_by=$11,updated_at=now()
-WHERE id=$1 RETURNING id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at
+UPDATE managed_content SET kind=$1,slug=$2,title=$3,summary=$4,
+ status=$5,sort_order=$6,starts_at=$7,ends_at=$8,
+ data=$9,updated_by=$10,updated_at=now()
+WHERE managed_content.id=$11
+  AND managed_content.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $10)
+RETURNING id, kind, slug, title, summary, status, sort_order, starts_at, ends_at, data, created_by, updated_by, created_at, updated_at, centre_id
 `
 
 type UpdateManagedContentParams struct {
-	ID        pgtype.UUID        `json:"id"`
 	Kind      string             `json:"kind"`
 	Slug      string             `json:"slug"`
 	Title     string             `json:"title"`
@@ -212,11 +254,11 @@ type UpdateManagedContentParams struct {
 	EndsAt    pgtype.Timestamptz `json:"ends_at"`
 	Data      []byte             `json:"data"`
 	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	ID        pgtype.UUID        `json:"id"`
 }
 
 func (q *Queries) UpdateManagedContent(ctx context.Context, arg UpdateManagedContentParams) (ManagedContent, error) {
 	row := q.db.QueryRow(ctx, updateManagedContent,
-		arg.ID,
 		arg.Kind,
 		arg.Slug,
 		arg.Title,
@@ -227,6 +269,7 @@ func (q *Queries) UpdateManagedContent(ctx context.Context, arg UpdateManagedCon
 		arg.EndsAt,
 		arg.Data,
 		arg.UpdatedBy,
+		arg.ID,
 	)
 	var i ManagedContent
 	err := row.Scan(
@@ -244,6 +287,7 @@ func (q *Queries) UpdateManagedContent(ctx context.Context, arg UpdateManagedCon
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CentreID,
 	)
 	return i, err
 }

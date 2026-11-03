@@ -693,7 +693,7 @@ func (q *Queries) ListMistakes(ctx context.Context, userID pgtype.UUID) ([]ListM
 }
 
 const lockContentDraft = `-- name: LockContentDraft :one
-SELECT id, exam_id, author_id, data, updated_at, admin_author_id, access_scope, owner_user_id FROM content_drafts WHERE id = $1 FOR UPDATE
+SELECT id, exam_id, author_id, data, updated_at, admin_author_id, access_scope, owner_user_id, centre_id FROM content_drafts WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockContentDraft(ctx context.Context, id pgtype.UUID) (ContentDraft, error) {
@@ -708,6 +708,7 @@ func (q *Queries) LockContentDraft(ctx context.Context, id pgtype.UUID) (Content
 		&i.AdminAuthorID,
 		&i.AccessScope,
 		&i.OwnerUserID,
+		&i.CentreID,
 	)
 	return i, err
 }

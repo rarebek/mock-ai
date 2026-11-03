@@ -184,7 +184,8 @@ func (q *Queries) DeleteAdminSession(ctx context.Context, tokenHash string) erro
 }
 
 const getAdminSession = `-- name: GetAdminSession :one
-SELECT a.id,a.email,a.display_name FROM admins a JOIN admin_sessions s ON s.admin_id=a.id
+SELECT a.id,a.email,a.display_name,a.centre_id,coalesce((SELECT c.name FROM centres c WHERE c.id=a.centre_id),'')::text AS centre_name
+FROM admins a JOIN admin_sessions s ON s.admin_id=a.id
 WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT a.disabled
 `
 
@@ -192,12 +193,20 @@ type GetAdminSessionRow struct {
 	ID          pgtype.UUID `json:"id"`
 	Email       string      `json:"email"`
 	DisplayName string      `json:"display_name"`
+	CentreID    pgtype.UUID `json:"centre_id"`
+	CentreName  string      `json:"centre_name"`
 }
 
 func (q *Queries) GetAdminSession(ctx context.Context, tokenHash string) (GetAdminSessionRow, error) {
 	row := q.db.QueryRow(ctx, getAdminSession, tokenHash)
 	var i GetAdminSessionRow
-	err := row.Scan(&i.ID, &i.Email, &i.DisplayName)
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.CentreID,
+		&i.CentreName,
+	)
 	return i, err
 }
 

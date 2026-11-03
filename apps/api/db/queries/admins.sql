@@ -15,7 +15,8 @@ UPDATE admins SET login_attempts=0,login_window=now() WHERE id=$1;
 INSERT INTO admin_sessions(token_hash,admin_id,expires_at) VALUES($1,$2,$3);
 
 -- name: GetAdminSession :one
-SELECT a.id,a.email,a.display_name FROM admins a JOIN admin_sessions s ON s.admin_id=a.id
+SELECT a.id,a.email,a.display_name,a.centre_id,coalesce((SELECT c.name FROM centres c WHERE c.id=a.centre_id),'')::text AS centre_name
+FROM admins a JOIN admin_sessions s ON s.admin_id=a.id
 WHERE s.token_hash=$1 AND s.expires_at>now() AND NOT a.disabled;
 
 -- name: DeleteAdminSession :exec

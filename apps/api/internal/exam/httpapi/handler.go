@@ -51,7 +51,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 func (h *Handler) listPublishedContent(w http.ResponseWriter, r *http.Request) {
-	items, e := h.service.ListPublishedContent(r.Context(), r.URL.Query().Get("kind"))
+	user, _ := identityhttp.UserFromContext(r.Context())
+	items, e := h.service.ListPublishedContent(r.Context(), user.ID, r.URL.Query().Get("kind"))
 	if e != nil {
 		h.fail(w, e)
 		return

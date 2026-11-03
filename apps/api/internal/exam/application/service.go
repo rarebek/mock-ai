@@ -23,7 +23,7 @@ var questionTypes = map[string]struct{}{
 
 type Repository interface {
 	LearningRepository
-	ListPublishedContent(ctx context.Context, kind string) ([]ManagedContent, error)
+	ListPublishedContent(ctx context.Context, u, kind string) ([]ManagedContent, error)
 	ListExams(ctx context.Context, userID string) ([]ExamSummary, error)
 	GetExam(ctx context.Context, userID, examID string) (Exam, error)
 	StartAttempt(ctx context.Context, userID, versionID string) (Attempt, error)

@@ -18,6 +18,9 @@ type Querier interface {
 	AnswerSpeaking(ctx context.Context, arg AnswerSpeakingParams) (int64, error)
 	ArchiveContentVersions(ctx context.Context, examID pgtype.UUID) error
 	AssignUserRole(ctx context.Context, arg AssignUserRoleParams) error
+	// A join code identifies a centre from a Telegram deep link. A disabled centre
+	// stops accepting new students; the ones it already has are untouched.
+	CentreByJoinCode(ctx context.Context, joinCode string) (Centre, error)
 	ClaimContentImport(ctx context.Context) (ClaimContentImportRow, error)
 	ClaimReminders(ctx context.Context) ([]ClaimRemindersRow, error)
 	ClaimSpeakingEvaluation(ctx context.Context) (SpeakingEvaluationJob, error)
@@ -35,6 +38,7 @@ type Querier interface {
 	CreateAdmin(ctx context.Context, arg CreateAdminParams) (pgtype.UUID, error)
 	CreateAdminSession(ctx context.Context, arg CreateAdminSessionParams) error
 	CreateAttempt(ctx context.Context, arg CreateAttemptParams) (Attempt, error)
+	CreateCentre(ctx context.Context, arg CreateCentreParams) (Centre, error)
 	CreateContentAnswer(ctx context.Context, arg CreateContentAnswerParams) error
 	CreateContentBand(ctx context.Context, arg CreateContentBandParams) error
 	CreateContentDraft(ctx context.Context, arg CreateContentDraftParams) (pgtype.UUID, error)
@@ -54,7 +58,7 @@ type Querier interface {
 	CreateVerifiedUser(ctx context.Context, arg CreateVerifiedUserParams) (User, error)
 	CreateWriting(ctx context.Context, arg CreateWritingParams) (WritingSubmission, error)
 	DeleteAdminSession(ctx context.Context, tokenHash string) error
-	DeleteManagedContent(ctx context.Context, id pgtype.UUID) (int64, error)
+	DeleteManagedContent(ctx context.Context, arg DeleteManagedContentParams) (int64, error)
 	DeleteSpeaking(ctx context.Context, arg DeleteSpeakingParams) (int64, error)
 	DeleteWriting(ctx context.Context, arg DeleteWritingParams) (int64, error)
 	DisableReminder(ctx context.Context, userID pgtype.UUID) error
@@ -77,6 +81,7 @@ type Querier interface {
 	GetAttemptForUpdate(ctx context.Context, arg GetAttemptForUpdateParams) (Attempt, error)
 	GetAttemptReview(ctx context.Context, arg GetAttemptReviewParams) ([]GetAttemptReviewRow, error)
 	GetBandForRawScore(ctx context.Context, arg GetBandForRawScoreParams) (pgtype.Numeric, error)
+	GetCentre(ctx context.Context, id pgtype.UUID) (Centre, error)
 	GetCommunityBoard(ctx context.Context, studentID pgtype.UUID) ([]GetCommunityBoardRow, error)
 	GetCommunityProfile(ctx context.Context, id pgtype.UUID) (GetCommunityProfileRow, error)
 	GetCommunityStats(ctx context.Context, userID pgtype.UUID) (GetCommunityStatsRow, error)
@@ -102,16 +107,21 @@ type Querier interface {
 	GetWorkspace(ctx context.Context, arg GetWorkspaceParams) ([]byte, error)
 	GetWriting(ctx context.Context, arg GetWritingParams) (WritingSubmission, error)
 	ImportAIKey(ctx context.Context, arg ImportAIKeyParams) error
+	// Joining is one-way for now: a student already attached to a centre keeps it,
+	// so a stray link cannot move someone out of the centre teaching them. The
+	// WHERE clause is the whole check, so a concurrent second tap cannot race it.
+	JoinCentre(ctx context.Context, arg JoinCentreParams) (pgtype.UUID, error)
 	ListAdminStudents(ctx context.Context) ([]ListAdminStudentsRow, error)
 	ListAttemptAnswers(ctx context.Context, attemptID pgtype.UUID) ([]AttemptAnswer, error)
 	ListAttemptScoringRows(ctx context.Context, id pgtype.UUID) ([]ListAttemptScoringRowsRow, error)
+	ListCentres(ctx context.Context) ([]ListCentresRow, error)
 	ListContentDrafts(ctx context.Context) ([]ListContentDraftsRow, error)
 	ListContentImports(ctx context.Context, adminAuthorID pgtype.UUID) ([]ListContentImportsRow, error)
 	ListExamSections(ctx context.Context, examVersionID pgtype.UUID) ([]ListExamSectionsRow, error)
-	ListManagedContent(ctx context.Context, kind string) ([]ManagedContent, error)
+	ListManagedContent(ctx context.Context, arg ListManagedContentParams) ([]ManagedContent, error)
 	ListMistakes(ctx context.Context, userID pgtype.UUID) ([]ListMistakesRow, error)
 	ListPracticeQuestions(ctx context.Context, arg ListPracticeQuestionsParams) ([]ListPracticeQuestionsRow, error)
-	ListPublishedContent(ctx context.Context, kind string) ([]ManagedContent, error)
+	ListPublishedContent(ctx context.Context, arg ListPublishedContentParams) ([]ManagedContent, error)
 	ListPublishedExams(ctx context.Context, userID pgtype.UUID) ([]ListPublishedExamsRow, error)
 	ListQuestionOptions(ctx context.Context, questionID pgtype.UUID) ([]QuestionOption, error)
 	ListSectionQuestions(ctx context.Context, sectionID pgtype.UUID) ([]ListSectionQuestionsRow, error)
@@ -128,13 +138,13 @@ type Querier interface {
 	MarkSpeakingEvaluationProcessing(ctx context.Context, id pgtype.UUID) error
 	PrepareSpeakingLive(ctx context.Context, sessionID pgtype.UUID) error
 	PublishContentVersion(ctx context.Context, arg PublishContentVersionParams) (pgtype.UUID, error)
-	PublishedSpeakingPlan(ctx context.Context, id pgtype.UUID) (PublishedSpeakingPlanRow, error)
+	PublishedSpeakingPlan(ctx context.Context, arg PublishedSpeakingPlanParams) (PublishedSpeakingPlanRow, error)
 	PurgeSpeakingAudio(ctx context.Context) error
 	QueueSpeakingEvaluation(ctx context.Context, sessionID pgtype.UUID) error
 	QueueSpeakingReport(ctx context.Context, id pgtype.UUID) (SpeakingSession, error)
 	QueueSpeakingVoice(ctx context.Context, arg QueueSpeakingVoiceParams) (int64, error)
 	QueueWriting(ctx context.Context, arg QueueWritingParams) (WritingSubmission, error)
-	RandomSpeakingPlan(ctx context.Context) (RandomSpeakingPlanRow, error)
+	RandomSpeakingPlan(ctx context.Context, userID pgtype.UUID) (RandomSpeakingPlanRow, error)
 	RecordAttemptReview(ctx context.Context, arg RecordAttemptReviewParams) (pgtype.UUID, error)
 	RecordMistakeRetry(ctx context.Context, arg RecordMistakeRetryParams) error
 	RecordPracticeAnswer(ctx context.Context, arg RecordPracticeAnswerParams) error
@@ -162,6 +172,7 @@ type Querier interface {
 	SpeakingRecordings(ctx context.Context, sessionID pgtype.UUID) ([]SpeakingRecordingsRow, error)
 	SpeakingTurns(ctx context.Context, sessionID pgtype.UUID) ([]SpeakingTurnsRow, error)
 	TouchSession(ctx context.Context, tokenHash []byte) error
+	UpdateCentre(ctx context.Context, arg UpdateCentreParams) (Centre, error)
 	UpdateContentDraft(ctx context.Context, arg UpdateContentDraftParams) (pgtype.UUID, error)
 	UpdateContentExamAccess(ctx context.Context, arg UpdateContentExamAccessParams) error
 	UpdateExternalProfile(ctx context.Context, arg UpdateExternalProfileParams) (User, error)

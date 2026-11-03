@@ -31,6 +31,38 @@ func New(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool, queries: db.New(pool)}
 }
 
+// JoinCentre attaches a student to the centre a join code identifies. It is
+// one-way: a student who already belongs to a centre keeps it, so a link
+// forwarded into the wrong chat cannot move someone out of the centre that is
+// teaching them. Returns the centre they ended up in, which may be the one
+// they already had.
+func (r *Repository) JoinCentre(ctx context.Context, userID, joinCode string) (domain.Centre, bool, error) {
+	id, err := parseUUID(userID)
+	if err != nil {
+		return domain.Centre{}, false, ErrNotFound
+	}
+	centre, err := r.queries.CentreByJoinCode(ctx, joinCode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Centre{}, false, ErrNotFound
+	}
+	if err != nil {
+		return domain.Centre{}, false, fmt.Errorf("find centre: %w", err)
+	}
+	joined := true
+	if _, err = r.queries.JoinCentre(ctx, db.JoinCentreParams{CentreID: centre.ID, UserID: id}); errors.Is(err, pgx.ErrNoRows) {
+		// Already in a centre, or no such student. Either way nothing moved.
+		joined = false
+	} else if err != nil {
+		return domain.Centre{}, false, fmt.Errorf("join centre: %w", err)
+	}
+	return domain.Centre{
+		ID:            uuidString(centre.ID),
+		Slug:          centre.Slug,
+		Name:          centre.Name,
+		IncludeGlobal: centre.IncludeGlobal,
+	}, joined, nil
+}
+
 // IssueLoginLink stores the hash of a one-time login token for a user. The raw
 // token is never persisted, so the table cannot be replayed into a session.
 func (r *Repository) IssueLoginLink(ctx context.Context, userID string, tokenHash []byte, expiresAt time.Time) error {

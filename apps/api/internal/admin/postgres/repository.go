@@ -3,10 +3,13 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	app "github.com/own/mock-ai/apps/api/internal/admin/application"
 	db "github.com/own/mock-ai/apps/api/internal/platform/postgres/sqlc"
+	"strings"
 	"time"
 )
 
@@ -18,6 +21,16 @@ type Repository struct {
 func New(p *pgxpool.Pool) *Repository  { return &Repository{q: db.New(p), p: p} }
 func id(s string) (pgtype.UUID, error) { var v pgtype.UUID; e := v.Scan(s); return v, e }
 func str(v pgtype.UUID) string         { s, _ := v.Value(); return s.(string) }
+
+// optional renders a nullable id. str asserts the driver returned a string,
+// which a NULL uuid does not, so a platform administrator -- who has no centre
+// -- would panic on login if this went through str.
+func optional(v pgtype.UUID) string {
+	if !v.Valid {
+		return ""
+	}
+	return str(v)
+}
 func (r *Repository) Create(ctx context.Context, email, name, hash string) (string, error) {
 	v, e := r.q.CreateAdmin(ctx, db.CreateAdminParams{Email: email, DisplayName: name, PasswordHash: hash})
 	if e != nil {
@@ -51,7 +64,8 @@ func (r *Repository) Session(ctx context.Context, hash string) (app.Admin, error
 	if e != nil {
 		return app.Admin{}, e
 	}
-	return app.Admin{ID: str(v.ID), Email: v.Email, DisplayName: v.DisplayName}, nil
+	return app.Admin{ID: str(v.ID), Email: v.Email, DisplayName: v.DisplayName,
+		CentreID: optional(v.CentreID), CentreName: v.CentreName}, nil
 }
 func (r *Repository) DeleteSession(ctx context.Context, hash string) error {
 	return r.q.DeleteAdminSession(ctx, hash)
@@ -235,8 +249,58 @@ func nullableTime(v *time.Time) pgtype.Timestamptz {
 	}
 	return pgtype.Timestamptz{Time: *v, Valid: true}
 }
-func (r *Repository) ListContent(ctx context.Context, kind string) ([]app.ManagedContent, error) {
-	rows, e := r.q.ListManagedContent(ctx, kind)
+func centreOf(v db.Centre) app.Centre {
+	return app.Centre{ID: str(v.ID), Slug: v.Slug, Name: v.Name, JoinCode: v.JoinCode,
+		IncludeGlobal: v.IncludeGlobal, Disabled: v.DisabledAt.Valid}
+}
+
+func (r *Repository) ListCentres(ctx context.Context) ([]app.Centre, error) {
+	rows, e := r.q.ListCentres(ctx)
+	if e != nil {
+		return nil, e
+	}
+	out := make([]app.Centre, 0, len(rows))
+	for _, v := range rows {
+		centre := centreOf(db.Centre{ID: v.ID, Slug: v.Slug, Name: v.Name, JoinCode: v.JoinCode,
+			IncludeGlobal: v.IncludeGlobal, DisabledAt: v.DisabledAt, CreatedAt: v.CreatedAt})
+		centre.Students, centre.Exams = v.StudentCount, v.ExamCount
+		out = append(out, centre)
+	}
+	return out, nil
+}
+
+func (r *Repository) CreateCentre(ctx context.Context, name, slug, code string, includeGlobal bool) (app.Centre, error) {
+	row, e := r.q.CreateCentre(ctx, db.CreateCentreParams{Slug: slug, Name: name, JoinCode: code, IncludeGlobal: includeGlobal})
+	if e != nil {
+		if strings.Contains(e.Error(), "centres_slug_key") {
+			return app.Centre{}, app.ErrCentreTaken
+		}
+		return app.Centre{}, e
+	}
+	return centreOf(row), nil
+}
+
+func (r *Repository) UpdateCentre(ctx context.Context, value, name string, includeGlobal, disabled bool) (app.Centre, error) {
+	v, e := id(value)
+	if e != nil {
+		return app.Centre{}, app.ErrCentreNotFound
+	}
+	row, e := r.q.UpdateCentre(ctx, db.UpdateCentreParams{ID: v, Name: name, IncludeGlobal: includeGlobal, Disabled: disabled})
+	if errors.Is(e, pgx.ErrNoRows) {
+		return app.Centre{}, app.ErrCentreNotFound
+	}
+	if e != nil {
+		return app.Centre{}, e
+	}
+	return centreOf(row), nil
+}
+
+func (r *Repository) ListContent(ctx context.Context, adminID, kind string) ([]app.ManagedContent, error) {
+	a, e := id(adminID)
+	if e != nil {
+		return nil, e
+	}
+	rows, e := r.q.ListManagedContent(ctx, db.ListManagedContentParams{AdminID: a, Kind: kind})
 	if e != nil {
 		return nil, e
 	}
@@ -272,12 +336,16 @@ func (r *Repository) UpdateContent(ctx context.Context, adminID string, v app.Ma
 	}
 	return content(row), nil
 }
-func (r *Repository) DeleteContent(ctx context.Context, value string) error {
+func (r *Repository) DeleteContent(ctx context.Context, adminID, value string) error {
+	a, e := id(adminID)
+	if e != nil {
+		return app.ErrContentNotFound
+	}
 	v, e := id(value)
 	if e != nil {
 		return app.ErrContentNotFound
 	}
-	n, e := r.q.DeleteManagedContent(ctx, v)
+	n, e := r.q.DeleteManagedContent(ctx, db.DeleteManagedContentParams{ID: v, AdminID: a})
 	if e == nil && n == 0 {
 		return app.ErrContentNotFound
 	}

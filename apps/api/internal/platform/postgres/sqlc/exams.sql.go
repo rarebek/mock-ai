@@ -21,7 +21,15 @@ JOIN accepted_answers aa ON aa.question_id = q.id
 WHERE q.id = $1
   AND ev.status = 'published'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=$2)
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = $2
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = $2)
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = $2 AND vc.include_global)))))
 ORDER BY aa.position
 `
 
@@ -82,7 +90,15 @@ WHERE e.id = $1
   AND ev.status = 'published'
   AND ev.purpose = 'mock'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=$2)
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = $2
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = $2)
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = $2 AND vc.include_global)))))
 `
 
 type GetPublishedExamParams struct {
@@ -189,7 +205,15 @@ JOIN exam_versions ev ON ev.id = es.exam_version_id
 JOIN exams e ON e.id = ev.exam_id
 WHERE ev.status = 'published'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=$1)
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = $1
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = $1)
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = $1 AND vc.include_global)))))
   AND ($2::text = '' OR ev.skill::text = $2::text)
   AND ($3::text = '' OR q.type::text = $3::text)
 ORDER BY random()
@@ -277,7 +301,15 @@ JOIN questions q ON q.section_id = es.id
 WHERE ev.status = 'published'
   AND ev.purpose = 'mock'
   AND e.archived_at IS NULL
-  AND (e.access_scope='public' OR e.owner_user_id=$1)
+  -- Own uploads stay visible whatever happens to centres; everything else is
+  -- public within its centre. The viewer's centre is read from the user id the
+  -- query already takes, so no caller can pass the wrong one or omit it.
+  AND (e.owner_user_id = $1
+       OR (e.access_scope = 'public'
+           AND (e.centre_id IS NOT DISTINCT FROM (SELECT centre_id FROM users WHERE id = $1)
+                OR (e.centre_id IS NULL AND EXISTS (
+                      SELECT 1 FROM users vu JOIN centres vc ON vc.id = vu.centre_id
+                      WHERE vu.id = $1 AND vc.include_global)))))
 GROUP BY e.id, ev.id
 ORDER BY ev.published_at DESC
 `

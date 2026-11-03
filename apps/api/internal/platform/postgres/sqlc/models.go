@@ -417,6 +417,7 @@ type Admin struct {
 	LoginWindow   pgtype.Timestamptz `json:"login_window"`
 	LoginAttempts int32              `json:"login_attempts"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	CentreID      pgtype.UUID        `json:"centre_id"`
 }
 
 type AdminSession struct {
@@ -479,6 +480,16 @@ type BandConversion struct {
 	Band            pgtype.Numeric `json:"band"`
 }
 
+type Centre struct {
+	ID            pgtype.UUID        `json:"id"`
+	Slug          string             `json:"slug"`
+	Name          string             `json:"name"`
+	JoinCode      string             `json:"join_code"`
+	IncludeGlobal bool               `json:"include_global"`
+	DisabledAt    pgtype.Timestamptz `json:"disabled_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type CommunityActivity struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	ActivityKey interface{}        `json:"activity_key"`
@@ -515,6 +526,7 @@ type ContentDraft struct {
 	AdminAuthorID pgtype.UUID        `json:"admin_author_id"`
 	AccessScope   string             `json:"access_scope"`
 	OwnerUserID   pgtype.UUID        `json:"owner_user_id"`
+	CentreID      pgtype.UUID        `json:"centre_id"`
 }
 
 type ContentImport struct {
@@ -537,6 +549,7 @@ type ContentImport struct {
 	CompletedAt     pgtype.Timestamptz `json:"completed_at"`
 	AccessScope     string             `json:"access_scope"`
 	OwnerUserID     pgtype.UUID        `json:"owner_user_id"`
+	CentreID        pgtype.UUID        `json:"centre_id"`
 }
 
 type Exam struct {
@@ -548,6 +561,7 @@ type Exam struct {
 	CreatedByAdmin pgtype.UUID        `json:"created_by_admin"`
 	AccessScope    string             `json:"access_scope"`
 	OwnerUserID    pgtype.UUID        `json:"owner_user_id"`
+	CentreID       pgtype.UUID        `json:"centre_id"`
 }
 
 type ExamSection struct {
@@ -592,6 +606,7 @@ type ManagedContent struct {
 	UpdatedBy pgtype.UUID        `json:"updated_by"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+	CentreID  pgtype.UUID        `json:"centre_id"`
 }
 
 type MistakeRetry struct {
@@ -765,6 +780,7 @@ type User struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
+	CentreID        pgtype.UUID        `json:"centre_id"`
 }
 
 type UserIdentity struct {

@@ -49,7 +49,8 @@ func (h *Handler) registerLive(mux *http.ServeMux) {
 			fail(w, e)
 			return
 		}
-		topic, turns, e := h.s.Repo.Plan(r.Context(), input.PlanID)
+		u, _ := identity.UserFromContext(r.Context())
+		topic, turns, e := h.s.Repo.Plan(r.Context(), u.ID, input.PlanID)
 		if e != nil {
 			fail(w, e)
 			return
@@ -64,7 +65,6 @@ func (h *Handler) registerLive(mux *http.ServeMux) {
 				turns[i].Seconds = 120
 			}
 		}
-		u, _ := identity.UserFromContext(r.Context())
 		v, e := h.Live.Repo.CreateLive(r.Context(), u.ID, h.s.Model, h.Live.Model, ex, topic, turns)
 		if e != nil {
 			fail(w, e)
