@@ -95,6 +95,9 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     environment: production
     steps:
       - uses: actions/checkout@v4
@@ -167,14 +170,13 @@ jobs:
           ssh -i ~/.ssh/mock-ai "$VPS_USER@$VPS_HOST" 'chmod 600 ~/tools/mock-ai/api/.env.next && mv ~/tools/mock-ai/api/.env.next ~/tools/mock-ai/api/.env'
       - name: Log VPS in to GHCR
         env:
-          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
-          GHCR_USERNAME: ${{ github.repository_owner }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USERNAME: ${{ github.actor }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          if [ -n "$GHCR_READ_TOKEN" ]; then
-            printf '%s' "$GHCR_READ_TOKEN" | ssh -i ~/.ssh/mock-ai "$VPS_USER@$VPS_HOST" "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
-          fi
+          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/mock-ai "$VPS_USER@$VPS_HOST" \
+            "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
       - name: Deploy and verify
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
