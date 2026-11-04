@@ -121,7 +121,7 @@ jobs:
           DATABASE_URL: ${{ secrets.APP_DATABASE_URL }}
           SESSION_SECRET: ${{ secrets.APP_SESSION_SECRET }}
           WEB_ORIGIN: ${{ secrets.APP_WEB_ORIGIN }}
-          ADMIN_ORIGIN: ${{ vars.APP_ADMIN_ORIGIN || 'https://mockai.admin.chessinsight.uz' }}
+          ADMIN_ORIGIN: ${{ vars.APP_ADMIN_ORIGIN || 'https://panel.mock-ai.uz' }}
           AI_KEY_ENCRYPTION_KEY: ${{ secrets.APP_AI_KEY_ENCRYPTION_KEY }}
           GEMINI_WRITING_MODEL: ${{ vars.GEMINI_WRITING_MODEL || 'gemini-3.7-flash' }}
           GEMINI_CONTENT_MODEL: ${{ vars.GEMINI_CONTENT_MODEL || 'gemini-3.7-flash' }}
