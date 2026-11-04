@@ -146,6 +146,8 @@ type Repository interface {
 	ListCentres(context.Context) ([]Centre, error)
 	ListMarking(ctx context.Context, adminID string) (Marking, error)
 	PublishReview(ctx context.Context, adminID, skill, id string, report []byte) error
+	MarkingSpeakingTurns(ctx context.Context, adminID, sessionID string) ([]MarkingTurn, error)
+	MarkingSpeakingAudio(ctx context.Context, adminID, sessionID string, position int32) ([]byte, error)
 	CreateCentreAdmin(ctx context.Context, centreID, email, name, hash string) (string, error)
 	ListCentreAdmins(ctx context.Context, centreID string) ([]CentreAdmin, error)
 	SetCentreAdminState(ctx context.Context, centreID, adminID string, disabled bool) error
@@ -411,6 +413,19 @@ type MarkingItem struct {
 	SubmittedAt time.Time `json:"submitted_at"`
 }
 
+// MarkingTurn is one answer inside an interview a marker is working through.
+type MarkingTurn struct {
+	Position   int32  `json:"position"`
+	Part       int32  `json:"part"`
+	Prompt     string `json:"prompt"`
+	DurationMs int32  `json:"duration_ms"`
+	Answered   bool   `json:"answered"`
+	Skipped    bool   `json:"skipped"`
+	// Transcript is present when the live examiner produced one; a read-and-
+	// record interview has none, so the marker works from the audio.
+	Transcript string `json:"transcript,omitempty"`
+}
+
 // Review is what a marker fills in. The shape matches the report a student
 // already reads, so a marked report renders exactly like any other.
 type Review struct {
@@ -446,6 +461,20 @@ func (s *Service) ListMarking(ctx context.Context, actor Admin) (Marking, error)
 // PublishReview turns a marker's judgement into the report the student reads.
 // The band is theirs, not an average of the criteria: a marker who disagrees
 // with their own sub-scores is making a judgement, not a mistake.
+func (s *Service) MarkingSpeakingTurns(ctx context.Context, actor Admin, sessionID string) ([]MarkingTurn, error) {
+	if actor.Platform() {
+		return nil, ErrNotPlatformAdmin
+	}
+	return s.repository.MarkingSpeakingTurns(ctx, actor.ID, sessionID)
+}
+
+func (s *Service) MarkingSpeakingAudio(ctx context.Context, actor Admin, sessionID string, position int32) ([]byte, error) {
+	if actor.Platform() {
+		return nil, ErrNotPlatformAdmin
+	}
+	return s.repository.MarkingSpeakingAudio(ctx, actor.ID, sessionID, position)
+}
+
 func (s *Service) PublishReview(ctx context.Context, actor Admin, skill, id string, v Review) error {
 	if actor.Platform() {
 		return ErrNotPlatformAdmin

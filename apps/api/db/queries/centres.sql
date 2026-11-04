@@ -78,3 +78,25 @@ UPDATE speaking_sessions s SET status='completed', report=sqlc.arg(report), erro
 FROM users u
 WHERE s.id=sqlc.arg(id) AND u.id=s.user_id AND s.status='awaiting_review'
   AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id));
+
+-- A marker listening to what they are marking. Scoped to the administrator's
+-- own centre, and only while the work is actually awaiting their review, so
+-- this is never a general door onto student recordings.
+-- name: MarkingSpeakingAudio :one
+SELECT t.recording, s.id AS session_id
+FROM speaking_turns t
+JOIN speaking_sessions s ON s.id = t.session_id
+JOIN users u ON u.id = s.user_id
+WHERE s.id = sqlc.arg(session_id) AND t.position = sqlc.arg(position)
+  AND s.status = 'awaiting_review' AND s.audio_expires_at > now()
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id));
+
+-- The turns a marker needs to work through for one interview.
+-- name: MarkingSpeakingTurns :many
+SELECT t.position, t.part, t.prompt, t.duration_ms, t.answered, t.skipped, t.live_transcript
+FROM speaking_turns t
+JOIN speaking_sessions s ON s.id = t.session_id
+JOIN users u ON u.id = s.user_id
+WHERE s.id = sqlc.arg(session_id) AND s.status = 'awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
+ORDER BY t.position;

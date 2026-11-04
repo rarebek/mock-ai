@@ -6,6 +6,7 @@ import (
 	"errors"
 	app "github.com/own/mock-ai/apps/api/internal/admin/application"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -196,6 +197,32 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		respond(w, 200, v)
+	})))
+	mux.Handle("GET /api/v1/admin/marking/speaking/{work_id}/turns", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, e := h.service.MarkingSpeakingTurns(r.Context(), AdminFromContext(r.Context()), r.PathValue("work_id"))
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"turns": v})
+	})))
+	// The marker has to hear what they are marking. The audio is served rather
+	// than linked so it never leaves the admin session.
+	mux.Handle("GET /api/v1/admin/marking/speaking/{work_id}/{position}/recording", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		position, err := strconv.Atoi(r.PathValue("position"))
+		if err != nil || position < 0 || position > 50 {
+			fail(w, 404, "no such answer")
+			return
+		}
+		audio, e := h.service.MarkingSpeakingAudio(r.Context(), AdminFromContext(r.Context()), r.PathValue("work_id"), int32(position))
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Length", strconv.Itoa(len(audio)))
+		_, _ = w.Write(audio)
 	})))
 	mux.Handle("POST /api/v1/admin/marking/{skill}/{work_id}", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input app.Review

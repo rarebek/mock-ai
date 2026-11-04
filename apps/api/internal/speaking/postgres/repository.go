@@ -10,7 +10,6 @@ import (
 	"github.com/own/mock-ai/apps/api/internal/platform/keyvault"
 	db "github.com/own/mock-ai/apps/api/internal/platform/postgres/sqlc"
 	d "github.com/own/mock-ai/apps/api/internal/speaking/domain"
-	"strconv"
 	"time"
 )
 
@@ -20,11 +19,9 @@ type Repository struct {
 	Master string
 }
 
-func New(p *pgxpool.Pool, master string) *Repository { return &Repository{p, db.New(p), master} }
-func recordingBinding(id string, position int32) string {
-	return "mockai:speaking:recording:v1:" + id + ":" + strconv.Itoa(int(position))
-}
-func uuid(v string) pgtype.UUID { var id pgtype.UUID; _ = id.Scan(v); return id }
+func New(p *pgxpool.Pool, master string) *Repository    { return &Repository{p, db.New(p), master} }
+func recordingBinding(id string, position int32) string { return d.RecordingBinding(id, position) }
+func uuid(v string) pgtype.UUID                         { var id pgtype.UUID; _ = id.Scan(v); return id }
 func str(v pgtype.UUID) string {
 	if !v.Valid {
 		return ""

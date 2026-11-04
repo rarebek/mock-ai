@@ -33,7 +33,7 @@ func run() error {
 		return fmt.Errorf("database configuration invalid")
 	}
 	defer pool.Close()
-	_, e = app.New(postgres.New(pool)).Create(ctx, *email, *name, strings.TrimRight(string(secret), "\r\n"))
+	_, e = app.New(postgres.New(pool, "")).Create(ctx, *email, *name, strings.TrimRight(string(secret), "\r\n"))
 	if e != nil {
 		return fmt.Errorf("admin creation failed (check input, database and duplicate email): %w", e)
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -357,4 +358,12 @@ func ParseReport(raw []byte, s Session) (Report, error) {
 
 func invalidReport(reason string) error {
 	return fmt.Errorf("invalid speaking feedback: %s", reason)
+}
+
+// RecordingBinding is the additional data a stored answer is sealed against.
+// It lives here so the two packages that open recordings -- the student's own
+// playback and a centre marker's -- cannot drift apart: a binding that differs
+// by one character decrypts nothing.
+func RecordingBinding(sessionID string, position int32) string {
+	return "mockai:speaking:recording:v1:" + sessionID + ":" + strconv.Itoa(int(position))
 }

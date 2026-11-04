@@ -72,7 +72,7 @@ func main() {
 	if cfg.AIKeyEncryptionKey != "" {
 		examService.ConfigureImporter(geminiimport.New(db.New(pool), cfg.AIKeyEncryptionKey), cfg.GeminiContentModel, logger)
 	}
-	adminHandler := adminhttp.New(adminapp.New(adminpg.New(pool)), cfg.AdminOrigin, cfg.SecureCookie)
+	adminHandler := adminhttp.New(adminapp.New(adminpg.New(pool, cfg.AIKeyEncryptionKey)), cfg.AdminOrigin, cfg.SecureCookie)
 	examHandler := examhttp.New(examService, identityHandler, logger, adminHandler)
 	var evaluator writingapp.Evaluator
 	if cfg.AIKeyEncryptionKey != "" {

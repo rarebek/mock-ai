@@ -87,7 +87,7 @@ func TestLearningIntegration(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	authHandler := authhttp.New(auth, googleauth.New("", "", "", ""), logger, "http://localhost", false)
-	adminService := adminapp.New(adminpg.New(pool))
+	adminService := adminapp.New(adminpg.New(pool, strings.Repeat("ab", 32)))
 	adminHandler := adminhttp.New(adminService, "http://localhost", false)
 	writingService := writingapp.New(writingpg.New(pool), writingTestEvaluator{}, "gemini-3.7-flash")
 	speakingRepo := speakingpg.New(pool, strings.Repeat("ab", 32))
@@ -880,6 +880,22 @@ func TestLearningIntegration(t *testing.T) {
 	// Bands are half steps, and a marker cannot publish onto another centre.
 	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, map[string]any{"overall": 6.3, "summary": "x", "criteria": review["criteria"]}, manualAdmin, 422)
 	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, review, alphaAdmin, 404)
+	// A marker has to hear what they are marking, and that door opens only for
+	// their own centre's work while it is actually awaiting review.
+	request("GET", "/api/v1/admin/marking/speaking/"+offInterview.ID+"/turns", nil, manualAdmin, 200)
+	alphaTurns := request("GET", "/api/v1/admin/marking/speaking/"+offInterview.ID+"/turns", nil, alphaAdmin, 200)
+	var crossCentreTurns []struct{ Position int32 }
+	json.Unmarshal(alphaTurns["turns"], &crossCentreTurns)
+	if len(crossCentreTurns) != 0 {
+		t.Fatal("another centre's marker can see this interview's answers")
+	}
+	// A platform administrator has no students of their own to mark.
+	request("GET", "/api/v1/admin/marking/speaking/"+offInterview.ID+"/turns", nil, platformAdmin, 403)
+	// No recording was ever uploaded for this interview, so the audio route
+	// finds nothing rather than serving someone else's.
+	request("GET", "/api/v1/admin/marking/speaking/"+offInterview.ID+"/0/recording", nil, manualAdmin, 404)
+	request("GET", "/api/v1/admin/marking/speaking/"+offInterview.ID+"/0/recording", nil, alphaAdmin, 404)
+
 	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, review, manualAdmin, 204)
 	// Publishing twice is a miss: the work is no longer awaiting review.
 	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, review, manualAdmin, 404)

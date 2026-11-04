@@ -266,6 +266,91 @@ func (q *Queries) ListWritingAwaitingReview(ctx context.Context, adminID pgtype.
 	return items, nil
 }
 
+const markingSpeakingAudio = `-- name: MarkingSpeakingAudio :one
+SELECT t.recording, s.id AS session_id
+FROM speaking_turns t
+JOIN speaking_sessions s ON s.id = t.session_id
+JOIN users u ON u.id = s.user_id
+WHERE s.id = $1 AND t.position = $2
+  AND s.status = 'awaiting_review' AND s.audio_expires_at > now()
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $3)
+`
+
+type MarkingSpeakingAudioParams struct {
+	SessionID pgtype.UUID `json:"session_id"`
+	Position  int32       `json:"position"`
+	AdminID   pgtype.UUID `json:"admin_id"`
+}
+
+type MarkingSpeakingAudioRow struct {
+	Recording []byte      `json:"recording"`
+	SessionID pgtype.UUID `json:"session_id"`
+}
+
+// A marker listening to what they are marking. Scoped to the administrator's
+// own centre, and only while the work is actually awaiting their review, so
+// this is never a general door onto student recordings.
+func (q *Queries) MarkingSpeakingAudio(ctx context.Context, arg MarkingSpeakingAudioParams) (MarkingSpeakingAudioRow, error) {
+	row := q.db.QueryRow(ctx, markingSpeakingAudio, arg.SessionID, arg.Position, arg.AdminID)
+	var i MarkingSpeakingAudioRow
+	err := row.Scan(&i.Recording, &i.SessionID)
+	return i, err
+}
+
+const markingSpeakingTurns = `-- name: MarkingSpeakingTurns :many
+SELECT t.position, t.part, t.prompt, t.duration_ms, t.answered, t.skipped, t.live_transcript
+FROM speaking_turns t
+JOIN speaking_sessions s ON s.id = t.session_id
+JOIN users u ON u.id = s.user_id
+WHERE s.id = $1 AND s.status = 'awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $2)
+ORDER BY t.position
+`
+
+type MarkingSpeakingTurnsParams struct {
+	SessionID pgtype.UUID `json:"session_id"`
+	AdminID   pgtype.UUID `json:"admin_id"`
+}
+
+type MarkingSpeakingTurnsRow struct {
+	Position       int32  `json:"position"`
+	Part           int32  `json:"part"`
+	Prompt         string `json:"prompt"`
+	DurationMs     int32  `json:"duration_ms"`
+	Answered       bool   `json:"answered"`
+	Skipped        bool   `json:"skipped"`
+	LiveTranscript string `json:"live_transcript"`
+}
+
+// The turns a marker needs to work through for one interview.
+func (q *Queries) MarkingSpeakingTurns(ctx context.Context, arg MarkingSpeakingTurnsParams) ([]MarkingSpeakingTurnsRow, error) {
+	rows, err := q.db.Query(ctx, markingSpeakingTurns, arg.SessionID, arg.AdminID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MarkingSpeakingTurnsRow{}
+	for rows.Next() {
+		var i MarkingSpeakingTurnsRow
+		if err := rows.Scan(
+			&i.Position,
+			&i.Part,
+			&i.Prompt,
+			&i.DurationMs,
+			&i.Answered,
+			&i.Skipped,
+			&i.LiveTranscript,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const publishSpeakingReview = `-- name: PublishSpeakingReview :execrows
 UPDATE speaking_sessions s SET status='completed', report=$1, error_code='',
   reviewed_by=$2, reviewed_at=now(), updated_at=now()

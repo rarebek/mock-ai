@@ -8,7 +8,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	app "github.com/own/mock-ai/apps/api/internal/admin/application"
+	"github.com/own/mock-ai/apps/api/internal/platform/keyvault"
 	db "github.com/own/mock-ai/apps/api/internal/platform/postgres/sqlc"
+	speaking "github.com/own/mock-ai/apps/api/internal/speaking/domain"
 	"strings"
 	"time"
 )
@@ -16,9 +18,14 @@ import (
 type Repository struct {
 	q *db.Queries
 	p *pgxpool.Pool
+	// master unseals the recordings a marker has to listen to. Marking is the
+	// only reason this package touches student audio at all.
+	master string
 }
 
-func New(p *pgxpool.Pool) *Repository  { return &Repository{q: db.New(p), p: p} }
+func New(p *pgxpool.Pool, master string) *Repository {
+	return &Repository{q: db.New(p), p: p, master: master}
+}
 func id(s string) (pgtype.UUID, error) { var v pgtype.UUID; e := v.Scan(s); return v, e }
 func str(v pgtype.UUID) string         { s, _ := v.Value(); return s.(string) }
 
@@ -399,6 +406,58 @@ func (r *Repository) ListMarking(ctx context.Context, adminID string) (app.Marki
 // PublishReview stores a marked report. The centre match lives in the UPDATE,
 // so a miss means the work belongs to another centre or has already been
 // marked; either way it is not this marker's to publish.
+// MarkingSpeakingTurns lists the answers in one interview a marker is working
+// through, with the transcript where the live examiner produced one.
+func (r *Repository) MarkingSpeakingTurns(ctx context.Context, adminID, sessionID string) ([]app.MarkingTurn, error) {
+	a, e := id(adminID)
+	if e != nil {
+		return nil, e
+	}
+	v, e := id(sessionID)
+	if e != nil {
+		return nil, app.ErrReviewNotFound
+	}
+	rows, e := r.q.MarkingSpeakingTurns(ctx, db.MarkingSpeakingTurnsParams{SessionID: v, AdminID: a})
+	if e != nil {
+		return nil, e
+	}
+	out := make([]app.MarkingTurn, 0, len(rows))
+	for _, t := range rows {
+		out = append(out, app.MarkingTurn{Position: t.Position, Part: t.Part, Prompt: t.Prompt,
+			DurationMs: t.DurationMs, Answered: t.Answered, Skipped: t.Skipped, Transcript: t.LiveTranscript})
+	}
+	return out, nil
+}
+
+// MarkingSpeakingAudio returns one answer's recording for a marker to listen
+// to. The query admits it only while the work is awaiting that marker's own
+// centre, so this is never a general door onto student recordings.
+func (r *Repository) MarkingSpeakingAudio(ctx context.Context, adminID, sessionID string, position int32) ([]byte, error) {
+	a, e := id(adminID)
+	if e != nil {
+		return nil, e
+	}
+	v, e := id(sessionID)
+	if e != nil {
+		return nil, app.ErrReviewNotFound
+	}
+	row, e := r.q.MarkingSpeakingAudio(ctx, db.MarkingSpeakingAudioParams{SessionID: v, Position: position, AdminID: a})
+	if errors.Is(e, pgx.ErrNoRows) {
+		return nil, app.ErrReviewNotFound
+	}
+	if e != nil {
+		return nil, e
+	}
+	if len(row.Recording) == 0 {
+		return nil, app.ErrReviewNotFound
+	}
+	plain, e := keyvault.OpenBound(r.master, row.Recording, speaking.RecordingBinding(str(row.SessionID), position))
+	if e != nil {
+		return nil, e
+	}
+	return []byte(plain), nil
+}
+
 func (r *Repository) PublishReview(ctx context.Context, adminID, skill, value string, report []byte) error {
 	a, e := id(adminID)
 	if e != nil {

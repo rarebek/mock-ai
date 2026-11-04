@@ -148,6 +148,12 @@ type Querier interface {
 	LockWritingUser(ctx context.Context, userID string) error
 	MarkEmailVerified(ctx context.Context, id pgtype.UUID) (User, error)
 	MarkSpeakingEvaluationProcessing(ctx context.Context, id pgtype.UUID) error
+	// A marker listening to what they are marking. Scoped to the administrator's
+	// own centre, and only while the work is actually awaiting their review, so
+	// this is never a general door onto student recordings.
+	MarkingSpeakingAudio(ctx context.Context, arg MarkingSpeakingAudioParams) (MarkingSpeakingAudioRow, error)
+	// The turns a marker needs to work through for one interview.
+	MarkingSpeakingTurns(ctx context.Context, arg MarkingSpeakingTurnsParams) ([]MarkingSpeakingTurnsRow, error)
 	PrepareSpeakingLive(ctx context.Context, sessionID pgtype.UUID) error
 	PublishContentVersion(ctx context.Context, arg PublishContentVersionParams) (pgtype.UUID, error)
 	PublishSpeakingReview(ctx context.Context, arg PublishSpeakingReviewParams) (int64, error)
