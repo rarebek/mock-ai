@@ -6,3 +6,6 @@ coverage/
 *.test
 *.out
 
+
+# Local MCP server registrations. Contains API keys in plaintext.
+.mcp.json

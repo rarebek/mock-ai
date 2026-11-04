@@ -97,7 +97,22 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			fail(w, e)
 			return
 		}
-		reply(w, 200, map[string]any{"enabled": ready && h.s.Provider != nil, "countries": d.Countries, "daily_limit": 3, "audio_retention_days": 30})
+		u, _ := identity.UserFromContext(r.Context())
+		ai, e := h.s.Repo.AIEnabled(r.Context(), u.ID)
+		if e != nil {
+			fail(w, e)
+			return
+		}
+		// Two different questions. "live" is whether this student gets the
+		// spoken examiner, which needs both a provider and a centre that uses
+		// AI. "enabled" is whether they can practise speaking at all: a centre
+		// with AI switched off still reads the questions on screen and records,
+		// and needs no provider for that.
+		live := ready && h.s.Provider != nil && ai
+		reply(w, 200, map[string]any{
+			"enabled": live || !ai, "live": live,
+			"countries": d.Countries, "daily_limit": 3, "audio_retention_days": 30,
+		})
 	})
 	handle("GET /api/v1/speaking/sessions", func(w http.ResponseWriter, r *http.Request) {
 		u, _ := identity.UserFromContext(r.Context())
