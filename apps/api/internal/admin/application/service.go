@@ -148,8 +148,8 @@ type Repository interface {
 	ListCentreAdmins(ctx context.Context, centreID string) ([]CentreAdmin, error)
 	SetCentreAdminState(ctx context.Context, centreID, adminID string, disabled bool) error
 	ResetCentreAdminPassword(ctx context.Context, centreID, adminID, hash string) error
-	CreateCentre(context.Context, string, string, string, bool) (Centre, error)
-	UpdateCentre(context.Context, string, string, bool, bool) (Centre, error)
+	CreateCentre(context.Context, string, string, string, bool, bool) (Centre, error)
+	UpdateCentre(context.Context, string, string, bool, bool, bool) (Centre, error)
 	ListContent(context.Context, string, string) ([]ManagedContent, error)
 	CreateContent(context.Context, string, ManagedContent) (ManagedContent, error)
 	UpdateContent(context.Context, string, ManagedContent) (ManagedContent, error)
@@ -239,9 +239,13 @@ type Centre struct {
 	Name          string `json:"name"`
 	JoinCode      string `json:"join_code"`
 	IncludeGlobal bool   `json:"include_global"`
-	Disabled      bool   `json:"disabled"`
-	Students      int64  `json:"students"`
-	Exams         int64  `json:"exams"`
+	// AIEnabled false means nothing this centre's students produce is sent to
+	// a model: their Writing and Speaking work is captured for the centre to
+	// mark by hand, and the PDF import is closed.
+	AIEnabled bool  `json:"ai_enabled"`
+	Disabled  bool  `json:"disabled"`
+	Students  int64 `json:"students"`
+	Exams     int64 `json:"exams"`
 }
 
 var (
@@ -278,7 +282,7 @@ func (s *Service) ListCentres(ctx context.Context, actor Admin) ([]Centre, error
 // CreateCentre adds a tenant. The join code is generated here rather than
 // chosen: it travels in a Telegram deep link and in chat messages, so it has
 // to be unguessable, and letting a human pick it guarantees it will not be.
-func (s *Service) CreateCentre(ctx context.Context, actor Admin, name, slug string, includeGlobal bool) (Centre, error) {
+func (s *Service) CreateCentre(ctx context.Context, actor Admin, name, slug string, includeGlobal, aiEnabled bool) (Centre, error) {
 	if !actor.Platform() {
 		return Centre{}, ErrNotPlatformAdmin
 	}
@@ -291,10 +295,10 @@ func (s *Service) CreateCentre(ctx context.Context, actor Admin, name, slug stri
 	if e != nil {
 		return Centre{}, e
 	}
-	return s.repository.CreateCentre(ctx, name, slug, code, includeGlobal)
+	return s.repository.CreateCentre(ctx, name, slug, code, includeGlobal, aiEnabled)
 }
 
-func (s *Service) UpdateCentre(ctx context.Context, actor Admin, id, name string, includeGlobal, disabled bool) (Centre, error) {
+func (s *Service) UpdateCentre(ctx context.Context, actor Admin, id, name string, includeGlobal, aiEnabled, disabled bool) (Centre, error) {
 	if !actor.Platform() {
 		return Centre{}, ErrNotPlatformAdmin
 	}
@@ -302,7 +306,7 @@ func (s *Service) UpdateCentre(ctx context.Context, actor Admin, id, name string
 	if name == "" || utf8.RuneCountInString(name) > 120 {
 		return Centre{}, ErrInvalidCentre
 	}
-	return s.repository.UpdateCentre(ctx, id, name, includeGlobal, disabled)
+	return s.repository.UpdateCentre(ctx, id, name, includeGlobal, aiEnabled, disabled)
 }
 
 // CreateCentreAdmin provisions a centre's administrator and returns the one

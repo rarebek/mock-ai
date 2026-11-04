@@ -50,6 +50,13 @@ func (h *Handler) registerLive(mux *http.ServeMux) {
 			return
 		}
 		u, _ := identity.UserFromContext(r.Context())
+		// The live examiner is a model talking. A centre that has AI switched
+		// off does not get one; its students use the read-and-record
+		// interview, which never reaches a provider.
+		if ai, e := h.s.Repo.AIEnabled(r.Context(), u.ID); e != nil || !ai {
+			fail(w, d.ErrUnavailable)
+			return
+		}
 		topic, turns, e := h.s.Repo.Plan(r.Context(), u.ID, input.PlanID)
 		if e != nil {
 			fail(w, e)

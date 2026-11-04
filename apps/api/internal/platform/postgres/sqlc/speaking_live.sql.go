@@ -14,7 +14,7 @@ import (
 const claimSpeakingLive = `-- name: ClaimSpeakingLive :one
 UPDATE speaking_sessions SET live_run_id=gen_random_uuid(),live_lease_until=now()+interval '45 seconds',live_connections=live_connections+1
 WHERE id=$1 AND user_id=$2 AND mode='live' AND status='active' AND audio_expires_at>now()
-AND live_connections<12 AND (live_lease_until IS NULL OR live_lease_until<now()) RETURNING id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections
+AND live_connections<12 AND (live_lease_until IS NULL OR live_lease_until<now()) RETURNING id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections, reviewed_by, reviewed_at
 `
 
 type ClaimSpeakingLiveParams struct {
@@ -46,6 +46,8 @@ func (q *Queries) ClaimSpeakingLive(ctx context.Context, arg ClaimSpeakingLivePa
 		&i.LiveRunID,
 		&i.LiveLeaseUntil,
 		&i.LiveConnections,
+		&i.ReviewedBy,
+		&i.ReviewedAt,
 	)
 	return i, err
 }

@@ -79,6 +79,7 @@ type LearningRepository interface {
 	GetReminder(context.Context, string) (Reminder, error)
 	SaveReminder(context.Context, string, Reminder) error
 	ListDrafts(context.Context, string) ([]Draft, error)
+	AdminAIEnabled(ctx context.Context, adminID string) (bool, error)
 	SaveDraft(context.Context, string, string, Content) (string, error)
 	PublishDraft(context.Context, string) (string, error)
 	CreateImport(context.Context, string, string, int64, string, string, string, string, string, string) (string, error)

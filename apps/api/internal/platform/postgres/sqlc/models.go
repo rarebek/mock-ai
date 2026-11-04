@@ -488,6 +488,7 @@ type Centre struct {
 	IncludeGlobal bool               `json:"include_global"`
 	DisabledAt    pgtype.Timestamptz `json:"disabled_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	AiEnabled     bool               `json:"ai_enabled"`
 }
 
 type CommunityActivity struct {
@@ -715,6 +716,8 @@ type SpeakingSession struct {
 	LiveRunID       pgtype.UUID        `json:"live_run_id"`
 	LiveLeaseUntil  pgtype.Timestamptz `json:"live_lease_until"`
 	LiveConnections int32              `json:"live_connections"`
+	ReviewedBy      pgtype.UUID        `json:"reviewed_by"`
+	ReviewedAt      pgtype.Timestamptz `json:"reviewed_at"`
 }
 
 type SpeakingTurn struct {
@@ -824,4 +827,6 @@ type WritingSubmission struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	Reference     []byte             `json:"reference"`
+	ReviewedBy    pgtype.UUID        `json:"reviewed_by"`
+	ReviewedAt    pgtype.Timestamptz `json:"reviewed_at"`
 }

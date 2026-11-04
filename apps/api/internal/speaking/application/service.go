@@ -16,6 +16,7 @@ type Repository interface {
 	List(context.Context, string) ([]d.Session, error)
 	Answer(context.Context, string, string, int32, []byte, bool) (d.Session, error)
 	Queue(context.Context, string, string) (d.Session, error)
+	AIEnabled(ctx context.Context, userID string) (bool, error)
 	RetryVoice(context.Context, string, string, int32) error
 	Delete(context.Context, string, string) error
 	Audio(context.Context, string, string, int32, bool) ([]byte, error)
@@ -40,12 +41,21 @@ func (s *Service) Create(ctx context.Context, u string, consent bool, planID str
 	if !consent {
 		return d.Session{}, d.ErrConsent
 	}
-	ready, e := s.Repo.Available(ctx)
+	// A centre with AI switched off needs no provider: its interview is read
+	// from the screen and its recordings are marked by a person, so provider
+	// availability must not stand between its students and the session.
+	ai, e := s.Repo.AIEnabled(ctx, u)
 	if e != nil {
 		return d.Session{}, e
 	}
-	if !ready || s.Provider == nil {
-		return d.Session{}, d.ErrUnavailable
+	if ai {
+		ready, e := s.Repo.Available(ctx)
+		if e != nil {
+			return d.Session{}, e
+		}
+		if !ready || s.Provider == nil {
+			return d.Session{}, d.ErrUnavailable
+		}
 	}
 	ex, e := d.RandomExaminer()
 	if e != nil {

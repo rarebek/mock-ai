@@ -152,6 +152,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			Name          string `json:"name"`
 			Slug          string `json:"slug"`
 			IncludeGlobal *bool  `json:"include_global"`
+			AIEnabled     *bool  `json:"ai_enabled"`
 		}
 		if !decode(w, r, &input) {
 			return
@@ -159,7 +160,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// A centre that forgets to say otherwise gets the global library, so
 		// its students open a working app rather than an empty one.
 		includeGlobal := input.IncludeGlobal == nil || *input.IncludeGlobal
-		v, e := h.service.CreateCentre(r.Context(), AdminFromContext(r.Context()), input.Name, input.Slug, includeGlobal)
+		// A centre that says nothing gets AI, which is what every centre had
+		// before this was a choice.
+		aiEnabled := input.AIEnabled == nil || *input.AIEnabled
+		v, e := h.service.CreateCentre(r.Context(), AdminFromContext(r.Context()), input.Name, input.Slug, includeGlobal, aiEnabled)
 		if e != nil {
 			h.failCentre(w, e)
 			return
@@ -170,12 +174,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		var input struct {
 			Name          string `json:"name"`
 			IncludeGlobal bool   `json:"include_global"`
+			AIEnabled     bool   `json:"ai_enabled"`
 			Disabled      bool   `json:"disabled"`
 		}
 		if !decode(w, r, &input) {
 			return
 		}
-		v, e := h.service.UpdateCentre(r.Context(), AdminFromContext(r.Context()), r.PathValue("centre_id"), input.Name, input.IncludeGlobal, input.Disabled)
+		v, e := h.service.UpdateCentre(r.Context(), AdminFromContext(r.Context()), r.PathValue("centre_id"), input.Name, input.IncludeGlobal, input.AIEnabled, input.Disabled)
 		if e != nil {
 			h.failCentre(w, e)
 			return

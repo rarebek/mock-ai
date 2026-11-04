@@ -755,6 +755,86 @@ func TestLearningIntegration(t *testing.T) {
 		t.Fatal("a centre's own students cannot see what their centre published")
 	}
 
+	// ── AI entitlement ────────────────────────────────────────────────────
+	// A centre with AI switched off must reach no model at all: its students'
+	// essays and recordings are captured for a person, its interview is read
+	// rather than heard, and its administrators cannot send a paper to be
+	// read. The decisions live in SQL, so this is only really provable here.
+	var offCentre string
+	if e = pool.QueryRow(ctx, "INSERT INTO centres(slug,name,join_code,ai_enabled) VALUES('zz-manual','Manual Marking Centre','MANUALMARKING123',false) RETURNING id::text").Scan(&offCentre); e != nil {
+		t.Fatal(e)
+	}
+	offStudent, offSession := signIn(90104, "Manual Student")
+	offCookie := &http.Cookie{Name: "mock_ai_session", Value: offSession.Token}
+	if _, e = pool.Exec(ctx, "UPDATE users SET centre_id=$1 WHERE id=$2", offCentre, offStudent.ID); e != nil {
+		t.Fatal(e)
+	}
+
+	// Writing is captured, not queued, and no worker will ever claim it.
+	manualInput := writingapp.Input{
+		Prompt: "Should cities invest in public transport instead of roads?",
+		Essay:  strings.Repeat("Public transport helps workers reach their jobs and saves road space. ", 25),
+	}
+	offDraft, e := writingService.Create(ctx, offStudent.ID, manualInput)
+	if e != nil {
+		t.Fatal(e)
+	}
+	request("POST", "/api/v1/writing/submissions/"+offDraft.ID+"/evaluate",
+		map[string]any{"revision": 1, "consent": true}, offCookie, 202)
+	var offStatus string
+	if e = pool.QueryRow(ctx, "SELECT status FROM writing_submissions WHERE id=$1", offDraft.ID).Scan(&offStatus); e != nil {
+		t.Fatal(e)
+	}
+	if offStatus != "awaiting_review" {
+		t.Fatalf("an AI-free centre's essay was marked %q, not parked for a person", offStatus)
+	}
+	if claimed, err := writingService.Repo.Claim(ctx); err == nil && claimed.ID == offDraft.ID {
+		t.Fatal("a worker claimed an essay that must never reach a model")
+	}
+
+	// The live examiner is a model talking, so there is none.
+	request("POST", "/api/v1/speaking/live/sessions", map[string]any{"consent": true}, offCookie, 503)
+
+	// The read-and-record interview: every turn is text, nothing is synthesised.
+	offSpeaking := request("POST", "/api/v1/speaking/sessions", map[string]any{"consent": true}, offCookie, 201)
+	var offInterview struct {
+		ID    string `json:"id"`
+		Turns []struct {
+			VoiceStatus string `json:"voice_status"`
+		} `json:"turns"`
+	}
+	json.Unmarshal(offSpeaking["session"], &offInterview)
+	if offInterview.ID == "" {
+		json.Unmarshal(offSpeaking["id"], &offInterview.ID)
+	}
+	var textTurns, otherTurns int
+	if e = pool.QueryRow(ctx, "SELECT count(*) FILTER (WHERE voice_status='text'), count(*) FILTER (WHERE voice_status<>'text') FROM speaking_turns WHERE session_id=$1", offInterview.ID).Scan(&textTurns, &otherTurns); e != nil {
+		t.Fatal(e)
+	}
+	if textTurns == 0 || otherTurns != 0 {
+		t.Fatalf("an AI-free interview queued speech synthesis: %d text, %d other", textTurns, otherTurns)
+	}
+
+	// A centre that keeps AI is untouched. This goes through the repository
+	// rather than the endpoint because the endpoint also waits on provider
+	// availability, and what is being proved here is the entitlement decision
+	// itself, which SQL makes.
+	onDraft, e := writingService.Create(ctx, alphaStudent.ID, manualInput)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = writingService.Repo.Queue(ctx, alphaStudent.ID, onDraft.ID, 1, "test-model"); e != nil {
+		t.Fatal(e)
+	}
+	var onStatus string
+	if e = pool.QueryRow(ctx, "SELECT status FROM writing_submissions WHERE id=$1", onDraft.ID).Scan(&onStatus); e != nil {
+		t.Fatal(e)
+	}
+	if onStatus != "queued" {
+		t.Fatalf("a centre that uses AI had its essay parked: %q", onStatus)
+	}
+	t.Log("AI entitlement: essays parked, interviews read not heard, live examiner closed, AI centres unaffected")
+
 	t.Log("learning centres: per-centre libraries, closed curricula, one-way joining, admin confinement and platform-only centre management passed")
 
 	t.Log("community privacy, opt-out, validation, ties, duplicate prevention, empty mocks and UTC reset passed")

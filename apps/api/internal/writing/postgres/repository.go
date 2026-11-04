@@ -203,3 +203,13 @@ func (r *Repository) Finish(ctx context.Context, s, run string, report []byte, c
 	}
 	return e
 }
+
+// AIEnabled reports whether this student's work may be sent to a model. A
+// student with no centre is a direct registrant, on the platform's own terms.
+func (r *Repository) AIEnabled(ctx context.Context, userID string) (bool, error) {
+	uid, e := id(userID)
+	if e != nil {
+		return false, app.ErrNotFound
+	}
+	return r.q.StudentAIEnabled(ctx, uid)
+}

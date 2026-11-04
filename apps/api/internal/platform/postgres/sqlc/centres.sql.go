@@ -11,8 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adminAIEnabled = `-- name: AdminAIEnabled :one
+SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id = a.centre_id), true)::boolean
+FROM admins a WHERE a.id = $1
+`
+
+// The same question for an administrator, used to close the PDF import.
+func (q *Queries) AdminAIEnabled(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, adminAIEnabled, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const centreByJoinCode = `-- name: CentreByJoinCode :one
-SELECT id, slug, name, join_code, include_global, disabled_at, created_at FROM centres WHERE join_code = $1 AND disabled_at IS NULL
+SELECT id, slug, name, join_code, include_global, disabled_at, created_at, ai_enabled FROM centres WHERE join_code = $1 AND disabled_at IS NULL
 `
 
 // A join code identifies a centre from a Telegram deep link. A disabled centre
@@ -28,14 +41,15 @@ func (q *Queries) CentreByJoinCode(ctx context.Context, joinCode string) (Centre
 		&i.IncludeGlobal,
 		&i.DisabledAt,
 		&i.CreatedAt,
+		&i.AiEnabled,
 	)
 	return i, err
 }
 
 const createCentre = `-- name: CreateCentre :one
-INSERT INTO centres (slug, name, join_code, include_global)
-VALUES ($1, $2, $3, $4)
-RETURNING id, slug, name, join_code, include_global, disabled_at, created_at
+INSERT INTO centres (slug, name, join_code, include_global, ai_enabled)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, slug, name, join_code, include_global, disabled_at, created_at, ai_enabled
 `
 
 type CreateCentreParams struct {
@@ -43,6 +57,7 @@ type CreateCentreParams struct {
 	Name          string `json:"name"`
 	JoinCode      string `json:"join_code"`
 	IncludeGlobal bool   `json:"include_global"`
+	AiEnabled     bool   `json:"ai_enabled"`
 }
 
 func (q *Queries) CreateCentre(ctx context.Context, arg CreateCentreParams) (Centre, error) {
@@ -51,6 +66,7 @@ func (q *Queries) CreateCentre(ctx context.Context, arg CreateCentreParams) (Cen
 		arg.Name,
 		arg.JoinCode,
 		arg.IncludeGlobal,
+		arg.AiEnabled,
 	)
 	var i Centre
 	err := row.Scan(
@@ -61,12 +77,13 @@ func (q *Queries) CreateCentre(ctx context.Context, arg CreateCentreParams) (Cen
 		&i.IncludeGlobal,
 		&i.DisabledAt,
 		&i.CreatedAt,
+		&i.AiEnabled,
 	)
 	return i, err
 }
 
 const getCentre = `-- name: GetCentre :one
-SELECT id, slug, name, join_code, include_global, disabled_at, created_at FROM centres WHERE id = $1
+SELECT id, slug, name, join_code, include_global, disabled_at, created_at, ai_enabled FROM centres WHERE id = $1
 `
 
 func (q *Queries) GetCentre(ctx context.Context, id pgtype.UUID) (Centre, error) {
@@ -80,6 +97,7 @@ func (q *Queries) GetCentre(ctx context.Context, id pgtype.UUID) (Centre, error)
 		&i.IncludeGlobal,
 		&i.DisabledAt,
 		&i.CreatedAt,
+		&i.AiEnabled,
 	)
 	return i, err
 }
@@ -106,7 +124,7 @@ func (q *Queries) JoinCentre(ctx context.Context, arg JoinCentreParams) (pgtype.
 }
 
 const listCentres = `-- name: ListCentres :many
-SELECT c.id, c.slug, c.name, c.join_code, c.include_global, c.disabled_at, c.created_at,
+SELECT c.id, c.slug, c.name, c.join_code, c.include_global, c.disabled_at, c.created_at, c.ai_enabled,
   (SELECT count(*) FROM users u WHERE u.centre_id = c.id)::bigint AS student_count,
   (SELECT count(*) FROM exams e WHERE e.centre_id = c.id)::bigint AS exam_count
 FROM centres c
@@ -121,6 +139,7 @@ type ListCentresRow struct {
 	IncludeGlobal bool               `json:"include_global"`
 	DisabledAt    pgtype.Timestamptz `json:"disabled_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	AiEnabled     bool               `json:"ai_enabled"`
 	StudentCount  int64              `json:"student_count"`
 	ExamCount     int64              `json:"exam_count"`
 }
@@ -142,6 +161,7 @@ func (q *Queries) ListCentres(ctx context.Context) ([]ListCentresRow, error) {
 			&i.IncludeGlobal,
 			&i.DisabledAt,
 			&i.CreatedAt,
+			&i.AiEnabled,
 			&i.StudentCount,
 			&i.ExamCount,
 		); err != nil {
@@ -155,26 +175,44 @@ func (q *Queries) ListCentres(ctx context.Context) ([]ListCentresRow, error) {
 	return items, nil
 }
 
+const studentAIEnabled = `-- name: StudentAIEnabled :one
+SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id = u.centre_id), true)::boolean
+FROM users u WHERE u.id = $1 AND u.deleted_at IS NULL
+`
+
+// Whether a student's work may be sent to a model. Derived from the student so
+// no caller can pass the wrong answer, and true for a student with no centre:
+// a direct registrant is on the platform's own terms.
+func (q *Queries) StudentAIEnabled(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, studentAIEnabled, id)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const updateCentre = `-- name: UpdateCentre :one
-UPDATE centres SET name = $2, include_global = $3,
+UPDATE centres SET name = $1, include_global = $2,
+  ai_enabled = $3,
   disabled_at = CASE WHEN $4::boolean THEN coalesce(disabled_at, now()) ELSE NULL END
-WHERE id = $1
-RETURNING id, slug, name, join_code, include_global, disabled_at, created_at
+WHERE id = $5
+RETURNING id, slug, name, join_code, include_global, disabled_at, created_at, ai_enabled
 `
 
 type UpdateCentreParams struct {
-	ID            pgtype.UUID `json:"id"`
 	Name          string      `json:"name"`
 	IncludeGlobal bool        `json:"include_global"`
+	AiEnabled     bool        `json:"ai_enabled"`
 	Disabled      bool        `json:"disabled"`
+	ID            pgtype.UUID `json:"id"`
 }
 
 func (q *Queries) UpdateCentre(ctx context.Context, arg UpdateCentreParams) (Centre, error) {
 	row := q.db.QueryRow(ctx, updateCentre,
-		arg.ID,
 		arg.Name,
 		arg.IncludeGlobal,
+		arg.AiEnabled,
 		arg.Disabled,
+		arg.ID,
 	)
 	var i Centre
 	err := row.Scan(
@@ -185,6 +223,7 @@ func (q *Queries) UpdateCentre(ctx context.Context, arg UpdateCentreParams) (Cen
 		&i.IncludeGlobal,
 		&i.DisabledAt,
 		&i.CreatedAt,
+		&i.AiEnabled,
 	)
 	return i, err
 }

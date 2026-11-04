@@ -12,8 +12,14 @@ INSERT INTO speaking_requests(user_id,kind) VALUES($1,$2);
 INSERT INTO speaking_sessions(user_id,examiner,topic,model) VALUES($1,$2,$3,$4) RETURNING *;
 
 -- name: CreateSpeakingTurn :exec
+-- A centre with AI switched off gets turns its students read: no voice is
+-- ever synthesised for them, so nothing about this session reaches a model.
 INSERT INTO speaking_turns(session_id,position,part,prompt,seconds,prep_seconds,voice_status)
-VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $2=0 THEN 'queued' ELSE 'pending' END);
+VALUES(sqlc.arg(session_id),sqlc.arg(position),sqlc.arg(part),sqlc.arg(prompt),sqlc.arg(seconds),sqlc.arg(prep_seconds),
+ CASE WHEN NOT (SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id=u.centre_id),true)
+                FROM speaking_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=sqlc.arg(session_id))
+      THEN 'text'
+      WHEN sqlc.arg(position)=0 THEN 'queued' ELSE 'pending' END);
 
 -- name: GetSpeaking :one
 SELECT * FROM speaking_sessions WHERE user_id=$1 AND id=$2;
@@ -34,15 +40,20 @@ WHERE s.user_id=$1 AND s.id=$2 AND t.position=$3 AND s.audio_expires_at>now();
 
 -- name: AnswerSpeaking :execrows
 UPDATE speaking_turns SET recording=$3,duration_ms=$4,answered=true,skipped=$5
-WHERE session_id=$1 AND position=$2 AND NOT answered AND voice_status='ready';
+WHERE session_id=$1 AND position=$2 AND NOT answered AND voice_status IN ('ready','text');
 
 -- name: QueueSpeakingVoice :execrows
 UPDATE speaking_turns SET voice_status='queued',voice_run_id=gen_random_uuid()
 WHERE session_id=$1 AND position=$2 AND voice_status IN ('pending','failed') AND voice_attempts<3;
 
+-- Like writing: a centre with AI switched off parks the recordings for a
+-- person. Workers only ever claim 'queued'.
 -- name: QueueSpeakingReport :one
-UPDATE speaking_sessions SET status='queued',run_id=gen_random_uuid(),error_code='',updated_at=now()
-WHERE id=$1 RETURNING *;
+UPDATE speaking_sessions SET
+ status=CASE WHEN (SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id=u.centre_id),true)
+                   FROM users u WHERE u.id=speaking_sessions.user_id) THEN 'queued' ELSE 'awaiting_review' END,
+ run_id=gen_random_uuid(),error_code='',updated_at=now()
+WHERE speaking_sessions.id=sqlc.arg(id) RETURNING *;
 
 -- name: DeleteSpeaking :execrows
 DELETE FROM speaking_sessions WHERE user_id=$1 AND id=$2;

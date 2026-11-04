@@ -55,6 +55,7 @@ type Repository interface {
 	Delete(context.Context, string, string) error
 	Queue(context.Context, string, string, int32, string) (Submission, error)
 	Available(context.Context) (bool, error)
+	AIEnabled(ctx context.Context, userID string) (bool, error)
 	Claim(context.Context) (Submission, error)
 	Finish(context.Context, string, string, []byte, string) error
 	Expire(context.Context) error
@@ -111,15 +112,25 @@ func (s *Service) Submit(ctx context.Context, u, id string, revision int32, cons
 	if len(strings.TrimSpace(v.Prompt)) < 20 || len(strings.Fields(v.Essay)) < 50 || !validDraft(Input{Prompt: v.Prompt, Essay: v.Essay}) {
 		return v, ErrInvalid
 	}
-	if s.Evaluator == nil {
-		return v, ErrUnavailable
-	}
-	ready, e := s.Repo.Available(ctx)
+	// A centre with AI switched off is not waiting on a provider, so provider
+	// availability must not stop its students submitting. Queue() parks their
+	// essay for a person; the decision is made in SQL so this check is a
+	// courtesy, not the guard.
+	ai, e := s.Repo.AIEnabled(ctx, u)
 	if e != nil {
 		return v, e
 	}
-	if !ready {
-		return v, ErrUnavailable
+	if ai {
+		if s.Evaluator == nil {
+			return v, ErrUnavailable
+		}
+		ready, e := s.Repo.Available(ctx)
+		if e != nil {
+			return v, e
+		}
+		if !ready {
+			return v, ErrUnavailable
+		}
 	}
 	return s.Repo.Queue(ctx, u, id, revision, s.Model)
 }

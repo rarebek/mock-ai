@@ -389,3 +389,8 @@ func (r *Repository) Cleanup(ctx context.Context) error {
 	}
 	return nil
 }
+
+// AIEnabled reports whether this student's work may reach a model.
+func (r *Repository) AIEnabled(ctx context.Context, userID string) (bool, error) {
+	return r.Q.StudentAIEnabled(ctx, uuid(userID))
+}

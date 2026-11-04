@@ -12,6 +12,8 @@ import (
 
 type Querier interface {
 	AddContentImportDraft(ctx context.Context, arg AddContentImportDraftParams) error
+	// The same question for an administrator, used to close the PDF import.
+	AdminAIEnabled(ctx context.Context, id pgtype.UUID) (bool, error)
 	AdminContentBreakdown(ctx context.Context, adminID pgtype.UUID) ([]AdminContentBreakdownRow, error)
 	AdminDashboardSummary(ctx context.Context) (AdminDashboardSummaryRow, error)
 	AdminDashboardTrend(ctx context.Context) ([]AdminDashboardTrendRow, error)
@@ -56,6 +58,8 @@ type Querier interface {
 	CreatePrivateMedia(ctx context.Context, arg CreatePrivateMediaParams) (pgtype.UUID, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateSpeaking(ctx context.Context, arg CreateSpeakingParams) (SpeakingSession, error)
+	// A centre with AI switched off gets turns its students read: no voice is
+	// ever synthesised for them, so nothing about this session reaches a model.
 	CreateSpeakingTurn(ctx context.Context, arg CreateSpeakingTurnParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	CreateVerifiedUser(ctx context.Context, arg CreateVerifiedUserParams) (User, error)
@@ -145,8 +149,14 @@ type Querier interface {
 	PublishedSpeakingPlan(ctx context.Context, arg PublishedSpeakingPlanParams) (PublishedSpeakingPlanRow, error)
 	PurgeSpeakingAudio(ctx context.Context) error
 	QueueSpeakingEvaluation(ctx context.Context, sessionID pgtype.UUID) error
+	// Like writing: a centre with AI switched off parks the recordings for a
+	// person. Workers only ever claim 'queued'.
 	QueueSpeakingReport(ctx context.Context, id pgtype.UUID) (SpeakingSession, error)
 	QueueSpeakingVoice(ctx context.Context, arg QueueSpeakingVoiceParams) (int64, error)
+	// Submitting parks the essay for a person when the student's centre has AI
+	// switched off. The decision is made here rather than in the caller so there
+	// is no path that can queue a centre's work for a model by mistake: a worker
+	// only ever claims 'queued'.
 	QueueWriting(ctx context.Context, arg QueueWritingParams) (WritingSubmission, error)
 	RandomSpeakingPlan(ctx context.Context, userID pgtype.UUID) (RandomSpeakingPlanRow, error)
 	RecordAttemptReview(ctx context.Context, arg RecordAttemptReviewParams) (pgtype.UUID, error)
@@ -180,6 +190,10 @@ type Querier interface {
 	SpeakingEvaluationOwner(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error)
 	SpeakingRecordings(ctx context.Context, sessionID pgtype.UUID) ([]SpeakingRecordingsRow, error)
 	SpeakingTurns(ctx context.Context, sessionID pgtype.UUID) ([]SpeakingTurnsRow, error)
+	// Whether a student's work may be sent to a model. Derived from the student so
+	// no caller can pass the wrong answer, and true for a student with no centre:
+	// a direct registrant is on the platform's own terms.
+	StudentAIEnabled(ctx context.Context, id pgtype.UUID) (bool, error)
 	TouchSession(ctx context.Context, tokenHash []byte) error
 	UpdateCentre(ctx context.Context, arg UpdateCentreParams) (Centre, error)
 	UpdateContentDraft(ctx context.Context, arg UpdateContentDraftParams) (pgtype.UUID, error)

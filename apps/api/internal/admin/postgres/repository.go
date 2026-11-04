@@ -326,7 +326,7 @@ func nullableTime(v *time.Time) pgtype.Timestamptz {
 }
 func centreOf(v db.Centre) app.Centre {
 	return app.Centre{ID: str(v.ID), Slug: v.Slug, Name: v.Name, JoinCode: v.JoinCode,
-		IncludeGlobal: v.IncludeGlobal, Disabled: v.DisabledAt.Valid}
+		IncludeGlobal: v.IncludeGlobal, AIEnabled: v.AiEnabled, Disabled: v.DisabledAt.Valid}
 }
 
 func (r *Repository) ListCentres(ctx context.Context) ([]app.Centre, error) {
@@ -337,15 +337,15 @@ func (r *Repository) ListCentres(ctx context.Context) ([]app.Centre, error) {
 	out := make([]app.Centre, 0, len(rows))
 	for _, v := range rows {
 		centre := centreOf(db.Centre{ID: v.ID, Slug: v.Slug, Name: v.Name, JoinCode: v.JoinCode,
-			IncludeGlobal: v.IncludeGlobal, DisabledAt: v.DisabledAt, CreatedAt: v.CreatedAt})
+			IncludeGlobal: v.IncludeGlobal, AiEnabled: v.AiEnabled, DisabledAt: v.DisabledAt, CreatedAt: v.CreatedAt})
 		centre.Students, centre.Exams = v.StudentCount, v.ExamCount
 		out = append(out, centre)
 	}
 	return out, nil
 }
 
-func (r *Repository) CreateCentre(ctx context.Context, name, slug, code string, includeGlobal bool) (app.Centre, error) {
-	row, e := r.q.CreateCentre(ctx, db.CreateCentreParams{Slug: slug, Name: name, JoinCode: code, IncludeGlobal: includeGlobal})
+func (r *Repository) CreateCentre(ctx context.Context, name, slug, code string, includeGlobal, aiEnabled bool) (app.Centre, error) {
+	row, e := r.q.CreateCentre(ctx, db.CreateCentreParams{Slug: slug, Name: name, JoinCode: code, IncludeGlobal: includeGlobal, AiEnabled: aiEnabled})
 	if e != nil {
 		if strings.Contains(e.Error(), "centres_slug_key") {
 			return app.Centre{}, app.ErrCentreTaken
@@ -355,12 +355,12 @@ func (r *Repository) CreateCentre(ctx context.Context, name, slug, code string, 
 	return centreOf(row), nil
 }
 
-func (r *Repository) UpdateCentre(ctx context.Context, value, name string, includeGlobal, disabled bool) (app.Centre, error) {
+func (r *Repository) UpdateCentre(ctx context.Context, value, name string, includeGlobal, aiEnabled, disabled bool) (app.Centre, error) {
 	v, e := id(value)
 	if e != nil {
 		return app.Centre{}, app.ErrCentreNotFound
 	}
-	row, e := r.q.UpdateCentre(ctx, db.UpdateCentreParams{ID: v, Name: name, IncludeGlobal: includeGlobal, Disabled: disabled})
+	row, e := r.q.UpdateCentre(ctx, db.UpdateCentreParams{ID: v, Name: name, IncludeGlobal: includeGlobal, AiEnabled: aiEnabled, Disabled: disabled})
 	if errors.Is(e, pgx.ErrNoRows) {
 		return app.Centre{}, app.ErrCentreNotFound
 	}

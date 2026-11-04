@@ -13,7 +13,7 @@ import (
 
 const answerSpeaking = `-- name: AnswerSpeaking :execrows
 UPDATE speaking_turns SET recording=$3,duration_ms=$4,answered=true,skipped=$5
-WHERE session_id=$1 AND position=$2 AND NOT answered AND voice_status='ready'
+WHERE session_id=$1 AND position=$2 AND NOT answered AND voice_status IN ('ready','text')
 `
 
 type AnswerSpeakingParams struct {
@@ -41,7 +41,7 @@ func (q *Queries) AnswerSpeaking(ctx context.Context, arg AnswerSpeakingParams) 
 const claimSpeakingReport = `-- name: ClaimSpeakingReport :one
 WITH candidate AS (SELECT id FROM speaking_sessions WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
 UPDATE speaking_sessions s SET status='processing',lease_until=now()+interval '4 minutes',updated_at=now()
-FROM candidate c WHERE s.id=c.id RETURNING s.id, s.user_id, s.examiner, s.topic, s.status, s.report, s.model, s.rubric_version, s.run_id, s.lease_until, s.error_code, s.consent_at, s.created_at, s.updated_at, s.audio_expires_at, s.mode, s.live_model, s.live_run_id, s.live_lease_until, s.live_connections
+FROM candidate c WHERE s.id=c.id RETURNING s.id, s.user_id, s.examiner, s.topic, s.status, s.report, s.model, s.rubric_version, s.run_id, s.lease_until, s.error_code, s.consent_at, s.created_at, s.updated_at, s.audio_expires_at, s.mode, s.live_model, s.live_run_id, s.live_lease_until, s.live_connections, s.reviewed_by, s.reviewed_at
 `
 
 func (q *Queries) ClaimSpeakingReport(ctx context.Context) (SpeakingSession, error) {
@@ -68,6 +68,8 @@ func (q *Queries) ClaimSpeakingReport(ctx context.Context) (SpeakingSession, err
 		&i.LiveRunID,
 		&i.LiveLeaseUntil,
 		&i.LiveConnections,
+		&i.ReviewedBy,
+		&i.ReviewedAt,
 	)
 	return i, err
 }
@@ -119,7 +121,7 @@ func (q *Queries) CountSpeakingRequests(ctx context.Context, arg CountSpeakingRe
 }
 
 const createSpeaking = `-- name: CreateSpeaking :one
-INSERT INTO speaking_sessions(user_id,examiner,topic,model) VALUES($1,$2,$3,$4) RETURNING id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections
+INSERT INTO speaking_sessions(user_id,examiner,topic,model) VALUES($1,$2,$3,$4) RETURNING id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections, reviewed_by, reviewed_at
 `
 
 type CreateSpeakingParams struct {
@@ -158,13 +160,19 @@ func (q *Queries) CreateSpeaking(ctx context.Context, arg CreateSpeakingParams) 
 		&i.LiveRunID,
 		&i.LiveLeaseUntil,
 		&i.LiveConnections,
+		&i.ReviewedBy,
+		&i.ReviewedAt,
 	)
 	return i, err
 }
 
 const createSpeakingTurn = `-- name: CreateSpeakingTurn :exec
 INSERT INTO speaking_turns(session_id,position,part,prompt,seconds,prep_seconds,voice_status)
-VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $2=0 THEN 'queued' ELSE 'pending' END)
+VALUES($1,$2,$3,$4,$5,$6,
+ CASE WHEN NOT (SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id=u.centre_id),true)
+                FROM speaking_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1)
+      THEN 'text'
+      WHEN $2=0 THEN 'queued' ELSE 'pending' END)
 `
 
 type CreateSpeakingTurnParams struct {
@@ -176,6 +184,8 @@ type CreateSpeakingTurnParams struct {
 	PrepSeconds int32       `json:"prep_seconds"`
 }
 
+// A centre with AI switched off gets turns its students read: no voice is
+// ever synthesised for them, so nothing about this session reaches a model.
 func (q *Queries) CreateSpeakingTurn(ctx context.Context, arg CreateSpeakingTurnParams) error {
 	_, err := q.db.Exec(ctx, createSpeakingTurn,
 		arg.SessionID,
@@ -288,7 +298,7 @@ func (q *Queries) FinishSpeakingVoice(ctx context.Context, arg FinishSpeakingVoi
 }
 
 const getSpeaking = `-- name: GetSpeaking :one
-SELECT id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections FROM speaking_sessions WHERE user_id=$1 AND id=$2
+SELECT id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections, reviewed_by, reviewed_at FROM speaking_sessions WHERE user_id=$1 AND id=$2
 `
 
 type GetSpeakingParams struct {
@@ -320,12 +330,14 @@ func (q *Queries) GetSpeaking(ctx context.Context, arg GetSpeakingParams) (Speak
 		&i.LiveRunID,
 		&i.LiveLeaseUntil,
 		&i.LiveConnections,
+		&i.ReviewedBy,
+		&i.ReviewedAt,
 	)
 	return i, err
 }
 
 const listSpeaking = `-- name: ListSpeaking :many
-SELECT id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections FROM speaking_sessions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30
+SELECT id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections, reviewed_by, reviewed_at FROM speaking_sessions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30
 `
 
 func (q *Queries) ListSpeaking(ctx context.Context, userID pgtype.UUID) ([]SpeakingSession, error) {
@@ -358,6 +370,8 @@ func (q *Queries) ListSpeaking(ctx context.Context, userID pgtype.UUID) ([]Speak
 			&i.LiveRunID,
 			&i.LiveLeaseUntil,
 			&i.LiveConnections,
+			&i.ReviewedBy,
+			&i.ReviewedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -370,7 +384,7 @@ func (q *Queries) ListSpeaking(ctx context.Context, userID pgtype.UUID) ([]Speak
 }
 
 const lockSpeaking = `-- name: LockSpeaking :one
-SELECT id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections FROM speaking_sessions WHERE user_id=$1 AND id=$2 FOR UPDATE
+SELECT id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections, reviewed_by, reviewed_at FROM speaking_sessions WHERE user_id=$1 AND id=$2 FOR UPDATE
 `
 
 type LockSpeakingParams struct {
@@ -402,6 +416,8 @@ func (q *Queries) LockSpeaking(ctx context.Context, arg LockSpeakingParams) (Spe
 		&i.LiveRunID,
 		&i.LiveLeaseUntil,
 		&i.LiveConnections,
+		&i.ReviewedBy,
+		&i.ReviewedAt,
 	)
 	return i, err
 }
@@ -426,10 +442,15 @@ func (q *Queries) PurgeSpeakingAudio(ctx context.Context) error {
 }
 
 const queueSpeakingReport = `-- name: QueueSpeakingReport :one
-UPDATE speaking_sessions SET status='queued',run_id=gen_random_uuid(),error_code='',updated_at=now()
-WHERE id=$1 RETURNING id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections
+UPDATE speaking_sessions SET
+ status=CASE WHEN (SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id=u.centre_id),true)
+                   FROM users u WHERE u.id=speaking_sessions.user_id) THEN 'queued' ELSE 'awaiting_review' END,
+ run_id=gen_random_uuid(),error_code='',updated_at=now()
+WHERE speaking_sessions.id=$1 RETURNING id, user_id, examiner, topic, status, report, model, rubric_version, run_id, lease_until, error_code, consent_at, created_at, updated_at, audio_expires_at, mode, live_model, live_run_id, live_lease_until, live_connections, reviewed_by, reviewed_at
 `
 
+// Like writing: a centre with AI switched off parks the recordings for a
+// person. Workers only ever claim 'queued'.
 func (q *Queries) QueueSpeakingReport(ctx context.Context, id pgtype.UUID) (SpeakingSession, error) {
 	row := q.db.QueryRow(ctx, queueSpeakingReport, id)
 	var i SpeakingSession
@@ -454,6 +475,8 @@ func (q *Queries) QueueSpeakingReport(ctx context.Context, id pgtype.UUID) (Spea
 		&i.LiveRunID,
 		&i.LiveLeaseUntil,
 		&i.LiveConnections,
+		&i.ReviewedBy,
+		&i.ReviewedAt,
 	)
 	return i, err
 }

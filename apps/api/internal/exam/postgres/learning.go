@@ -383,3 +383,13 @@ func (r *Repository) FailImport(ctx context.Context, id, message string) error {
 func (r *Repository) FailStaleImports(ctx context.Context) error {
 	return r.queries.FailStaleContentImports(ctx)
 }
+
+// AdminAIEnabled reports whether this administrator's centre may use the
+// model-backed features. A platform administrator has no centre and always may.
+func (r *Repository) AdminAIEnabled(ctx context.Context, adminID string) (bool, error) {
+	a, e := parseUUID(adminID)
+	if e != nil {
+		return false, app.ErrNotFound
+	}
+	return r.queries.AdminAIEnabled(ctx, a)
+}

@@ -38,9 +38,18 @@ AND created_at>=date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC';
 -- name: RecordWritingRequest :exec
 INSERT INTO writing_evaluation_requests(user_id,submission_id) VALUES($1,$2);
 
+-- Submitting parks the essay for a person when the student's centre has AI
+-- switched off. The decision is made here rather than in the caller so there
+-- is no path that can queue a centre's work for a model by mistake: a worker
+-- only ever claims 'queued'.
 -- name: QueueWriting :one
-UPDATE writing_submissions SET status='queued',model=$3,rubric_version=$4,error_code='',run_id=gen_random_uuid(),updated_at=now()
-WHERE user_id=$1 AND id=$2 AND revision=$5 AND status IN ('draft','failed') RETURNING *;
+UPDATE writing_submissions SET
+ status=CASE WHEN (SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id=u.centre_id),true)
+                   FROM users u WHERE u.id=sqlc.arg(user_id)) THEN 'queued' ELSE 'awaiting_review' END,
+ model=sqlc.arg(model),rubric_version=sqlc.arg(rubric_version),error_code='',run_id=gen_random_uuid(),updated_at=now()
+WHERE writing_submissions.user_id=sqlc.arg(user_id) AND writing_submissions.id=sqlc.arg(id)
+  AND writing_submissions.revision=sqlc.arg(revision)
+  AND status IN ('draft','failed') RETURNING *;
 
 -- name: ClaimWriting :one
 WITH next AS (SELECT id FROM writing_submissions WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)

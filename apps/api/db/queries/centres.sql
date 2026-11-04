@@ -1,6 +1,6 @@
 -- name: CreateCentre :one
-INSERT INTO centres (slug, name, join_code, include_global)
-VALUES ($1, $2, $3, $4)
+INSERT INTO centres (slug, name, join_code, include_global, ai_enabled)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: ListCentres :many
@@ -14,9 +14,10 @@ ORDER BY c.name;
 SELECT * FROM centres WHERE id = $1;
 
 -- name: UpdateCentre :one
-UPDATE centres SET name = $2, include_global = $3,
+UPDATE centres SET name = sqlc.arg(name), include_global = sqlc.arg(include_global),
+  ai_enabled = sqlc.arg(ai_enabled),
   disabled_at = CASE WHEN sqlc.arg(disabled)::boolean THEN coalesce(disabled_at, now()) ELSE NULL END
-WHERE id = $1
+WHERE id = sqlc.arg(id)
 RETURNING *;
 
 -- A join code identifies a centre from a Telegram deep link. A disabled centre
@@ -31,3 +32,15 @@ SELECT * FROM centres WHERE join_code = $1 AND disabled_at IS NULL;
 UPDATE users SET centre_id = sqlc.arg(centre_id), updated_at = now()
 WHERE id = sqlc.arg(user_id) AND centre_id IS NULL AND deleted_at IS NULL
 RETURNING centre_id;
+
+-- Whether a student's work may be sent to a model. Derived from the student so
+-- no caller can pass the wrong answer, and true for a student with no centre:
+-- a direct registrant is on the platform's own terms.
+-- name: StudentAIEnabled :one
+SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id = u.centre_id), true)::boolean
+FROM users u WHERE u.id = $1 AND u.deleted_at IS NULL;
+
+-- The same question for an administrator, used to close the PDF import.
+-- name: AdminAIEnabled :one
+SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id = a.centre_id), true)::boolean
+FROM admins a WHERE a.id = $1;

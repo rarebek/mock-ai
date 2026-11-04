@@ -67,6 +67,16 @@ func (s *Service) CreateImport(ctx context.Context, adminID, filename, skills, a
 	if _, err := io.ReadFull(file, head[:]); err != nil || !bytes.Equal(head[:], []byte("%PDF-")) {
 		return "", fmt.Errorf("%w: the uploaded file is not a PDF", ErrInvalidProfile)
 	}
+	// The import reads the paper with a model, so a centre that has AI
+	// switched off is refused here -- after the request has been checked, and
+	// before a single byte is uploaded anywhere.
+	ai, err := s.repository.AdminAIEnabled(ctx, adminID)
+	if err != nil {
+		return "", err
+	}
+	if !ai {
+		return "", ErrImportUnavailable
+	}
 	reader := io.MultiReader(bytes.NewReader(head[:]), file)
 	uri, digest, err := s.importer.UploadPDF(ctx, filename, reader, size)
 	if err != nil {
