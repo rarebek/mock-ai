@@ -144,6 +144,8 @@ type Repository interface {
 	DeleteSession(context.Context, string) error
 	Dashboard(context.Context, string) (Dashboard, error)
 	ListCentres(context.Context) ([]Centre, error)
+	ListMarking(ctx context.Context, adminID string) (Marking, error)
+	PublishReview(ctx context.Context, adminID, skill, id string, report []byte) error
 	CreateCentreAdmin(ctx context.Context, centreID, email, name, hash string) (string, error)
 	ListCentreAdmins(ctx context.Context, centreID string) ([]CentreAdmin, error)
 	SetCentreAdminState(ctx context.Context, centreID, adminID string, disabled bool) error
@@ -390,6 +392,116 @@ func initialPassword() (string, error) {
 		out = append(out, alphabet[int(b)%len(alphabet)])
 	}
 	return string(out), nil
+}
+
+// Marking is the work a centre has to assess itself, because it has AI
+// switched off.
+type Marking struct {
+	Writing  []MarkingItem `json:"writing"`
+	Speaking []MarkingItem `json:"speaking"`
+}
+
+type MarkingItem struct {
+	ID          string    `json:"id"`
+	StudentID   string    `json:"student_id"`
+	StudentName string    `json:"student_name"`
+	Title       string    `json:"title"`
+	Essay       string    `json:"essay,omitempty"`
+	Answers     int64     `json:"answers,omitempty"`
+	SubmittedAt time.Time `json:"submitted_at"`
+}
+
+// Review is what a marker fills in. The shape matches the report a student
+// already reads, so a marked report renders exactly like any other.
+type Review struct {
+	Overall   float64           `json:"overall"`
+	Summary   string            `json:"summary"`
+	Criteria  []ReviewCriterion `json:"criteria"`
+	Strengths []string          `json:"strengths"`
+	NextSteps []string          `json:"next_steps"`
+}
+
+type ReviewCriterion struct {
+	Key          string  `json:"key"`
+	Score        float64 `json:"score"`
+	Reason       string  `json:"reason"`
+	HowToImprove string  `json:"how_to_improve"`
+}
+
+var writingCriteria = map[string]bool{"task_achievement": true, "coherence_cohesion": true, "lexical_resource": true, "grammar": true}
+var speakingCriteria = map[string]bool{"fluency_coherence": true, "lexical_resource": true, "grammar": true, "pronunciation": true}
+
+var ErrReviewNotFound = errors.New("that work is not waiting for this centre to mark")
+
+var ErrInvalidReview = errors.New("a band from 0 to 9 in half steps, a summary, and a score for each criterion are required")
+
+func (s *Service) ListMarking(ctx context.Context, actor Admin) (Marking, error) {
+	// Platform administrators have no students of their own to mark.
+	if actor.Platform() {
+		return Marking{}, ErrNotPlatformAdmin
+	}
+	return s.repository.ListMarking(ctx, actor.ID)
+}
+
+// PublishReview turns a marker's judgement into the report the student reads.
+// The band is theirs, not an average of the criteria: a marker who disagrees
+// with their own sub-scores is making a judgement, not a mistake.
+func (s *Service) PublishReview(ctx context.Context, actor Admin, skill, id string, v Review) error {
+	if actor.Platform() {
+		return ErrNotPlatformAdmin
+	}
+	allowed := writingCriteria
+	if skill == "speaking" {
+		allowed = speakingCriteria
+	} else if skill != "writing" {
+		return ErrInvalidReview
+	}
+	v.Summary = strings.TrimSpace(v.Summary)
+	if !validBand(v.Overall) || v.Summary == "" || utf8.RuneCountInString(v.Summary) > 4000 || len(v.Criteria) != len(allowed) {
+		return ErrInvalidReview
+	}
+	seen := map[string]bool{}
+	for i := range v.Criteria {
+		c := &v.Criteria[i]
+		c.Reason = strings.TrimSpace(c.Reason)
+		c.HowToImprove = strings.TrimSpace(c.HowToImprove)
+		if !allowed[c.Key] || seen[c.Key] || !validBand(c.Score) ||
+			utf8.RuneCountInString(c.Reason) > 2000 || utf8.RuneCountInString(c.HowToImprove) > 2000 {
+			return ErrInvalidReview
+		}
+		seen[c.Key] = true
+	}
+	// model_version names the marker, so a report a person wrote can never be
+	// mistaken for one a model produced.
+	report := map[string]any{
+		"model_version": "marked by " + actor.DisplayName,
+		"overall":       v.Overall,
+		"assessable":    true,
+		"summary":       v.Summary,
+		"criteria":      v.Criteria,
+		"strengths":     cleanList(v.Strengths),
+		"next_steps":    cleanList(v.NextSteps),
+		"issues":        []any{},
+		"responses":     []any{},
+	}
+	raw, e := json.Marshal(report)
+	if e != nil {
+		return e
+	}
+	return s.repository.PublishReview(ctx, actor.ID, skill, id, raw)
+}
+
+// validBand accepts IELTS half bands only, which is what a marker writes.
+func validBand(v float64) bool { return v >= 0 && v <= 9 && v*2 == float64(int(v*2)) }
+
+func cleanList(in []string) []string {
+	out := []string{}
+	for _, v := range in {
+		if v = strings.TrimSpace(v); v != "" && utf8.RuneCountInString(v) <= 500 && len(out) < 8 {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // joinCode returns 160 bits of randomness in an alphabet without characters a

@@ -134,10 +134,14 @@ type Querier interface {
 	ListQuestionOptions(ctx context.Context, questionID pgtype.UUID) ([]QuestionOption, error)
 	ListSectionQuestions(ctx context.Context, sectionID pgtype.UUID) ([]ListSectionQuestionsRow, error)
 	ListSpeaking(ctx context.Context, userID pgtype.UUID) ([]SpeakingSession, error)
+	ListSpeakingAwaitingReview(ctx context.Context, adminID pgtype.UUID) ([]ListSpeakingAwaitingReviewRow, error)
 	ListSpeakingEvaluation(ctx context.Context, sessionID pgtype.UUID) ([]SpeakingEvaluationJob, error)
 	ListStudentAttempts(ctx context.Context, arg ListStudentAttemptsParams) ([]ListStudentAttemptsRow, error)
 	ListUserRoles(ctx context.Context, userID pgtype.UUID) ([]UserRole, error)
 	ListWriting(ctx context.Context, userID pgtype.UUID) ([]WritingSubmission, error)
+	// Work a centre must mark itself. Scoped to the administrator's own centre, so
+	// a marker only ever sees their own students' work.
+	ListWritingAwaitingReview(ctx context.Context, adminID pgtype.UUID) ([]ListWritingAwaitingReviewRow, error)
 	LockContentDraft(ctx context.Context, id pgtype.UUID) (ContentDraft, error)
 	LockSpeaking(ctx context.Context, arg LockSpeakingParams) (SpeakingSession, error)
 	LockSpeakingUser(ctx context.Context, userID string) error
@@ -146,6 +150,11 @@ type Querier interface {
 	MarkSpeakingEvaluationProcessing(ctx context.Context, id pgtype.UUID) error
 	PrepareSpeakingLive(ctx context.Context, sessionID pgtype.UUID) error
 	PublishContentVersion(ctx context.Context, arg PublishContentVersionParams) (pgtype.UUID, error)
+	PublishSpeakingReview(ctx context.Context, arg PublishSpeakingReviewParams) (int64, error)
+	// Publishing a marked report. The centre match is part of the update, so a
+	// marker cannot publish onto another centre's student, and 'awaiting_review'
+	// is required so this can never overwrite a report a model produced.
+	PublishWritingReview(ctx context.Context, arg PublishWritingReviewParams) (int64, error)
 	PublishedSpeakingPlan(ctx context.Context, arg PublishedSpeakingPlanParams) (PublishedSpeakingPlanRow, error)
 	PurgeSpeakingAudio(ctx context.Context) error
 	QueueSpeakingEvaluation(ctx context.Context, sessionID pgtype.UUID) error

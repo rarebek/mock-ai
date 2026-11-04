@@ -370,6 +370,59 @@ func (r *Repository) UpdateCentre(ctx context.Context, value, name string, inclu
 	return centreOf(row), nil
 }
 
+// ListMarking gathers the work this administrator's centre has to assess.
+func (r *Repository) ListMarking(ctx context.Context, adminID string) (app.Marking, error) {
+	a, e := id(adminID)
+	if e != nil {
+		return app.Marking{}, e
+	}
+	out := app.Marking{Writing: []app.MarkingItem{}, Speaking: []app.MarkingItem{}}
+	essays, e := r.q.ListWritingAwaitingReview(ctx, a)
+	if e != nil {
+		return app.Marking{}, e
+	}
+	for _, v := range essays {
+		out.Writing = append(out.Writing, app.MarkingItem{ID: str(v.ID), StudentID: str(v.UserID),
+			StudentName: v.DisplayName, Title: v.Prompt, Essay: v.Essay, SubmittedAt: v.UpdatedAt.Time})
+	}
+	interviews, e := r.q.ListSpeakingAwaitingReview(ctx, a)
+	if e != nil {
+		return app.Marking{}, e
+	}
+	for _, v := range interviews {
+		out.Speaking = append(out.Speaking, app.MarkingItem{ID: str(v.ID), StudentID: str(v.UserID),
+			StudentName: v.DisplayName, Title: v.Topic, Answers: v.Answers, SubmittedAt: v.UpdatedAt.Time})
+	}
+	return out, nil
+}
+
+// PublishReview stores a marked report. The centre match lives in the UPDATE,
+// so a miss means the work belongs to another centre or has already been
+// marked; either way it is not this marker's to publish.
+func (r *Repository) PublishReview(ctx context.Context, adminID, skill, value string, report []byte) error {
+	a, e := id(adminID)
+	if e != nil {
+		return e
+	}
+	v, e := id(value)
+	if e != nil {
+		return app.ErrReviewNotFound
+	}
+	var rows int64
+	if skill == "speaking" {
+		rows, e = r.q.PublishSpeakingReview(ctx, db.PublishSpeakingReviewParams{ID: v, AdminID: a, Report: report})
+	} else {
+		rows, e = r.q.PublishWritingReview(ctx, db.PublishWritingReviewParams{ID: v, AdminID: a, Report: report})
+	}
+	if e != nil {
+		return e
+	}
+	if rows == 0 {
+		return app.ErrReviewNotFound
+	}
+	return nil
+}
+
 func (r *Repository) ListContent(ctx context.Context, adminID, kind string) ([]app.ManagedContent, error) {
 	a, e := id(adminID)
 	if e != nil {

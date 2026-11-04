@@ -44,3 +44,37 @@ FROM users u WHERE u.id = $1 AND u.deleted_at IS NULL;
 -- name: AdminAIEnabled :one
 SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id = a.centre_id), true)::boolean
 FROM admins a WHERE a.id = $1;
+
+-- Work a centre must mark itself. Scoped to the administrator's own centre, so
+-- a marker only ever sees their own students' work.
+-- name: ListWritingAwaitingReview :many
+SELECT w.id, w.user_id, u.display_name, w.prompt, w.essay, w.updated_at
+FROM writing_submissions w JOIN users u ON u.id = w.user_id
+WHERE w.status = 'awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
+ORDER BY w.updated_at LIMIT 200;
+
+-- name: ListSpeakingAwaitingReview :many
+SELECT s.id, s.user_id, u.display_name, s.topic, s.updated_at,
+  (SELECT count(*) FROM speaking_turns t WHERE t.session_id = s.id AND t.answered)::bigint AS answers
+FROM speaking_sessions s JOIN users u ON u.id = s.user_id
+WHERE s.status = 'awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
+ORDER BY s.updated_at LIMIT 200;
+
+-- Publishing a marked report. The centre match is part of the update, so a
+-- marker cannot publish onto another centre's student, and 'awaiting_review'
+-- is required so this can never overwrite a report a model produced.
+-- name: PublishWritingReview :execrows
+UPDATE writing_submissions w SET status='completed', report=sqlc.arg(report), error_code='',
+  reviewed_by=sqlc.arg(admin_id), reviewed_at=now(), updated_at=now()
+FROM users u
+WHERE w.id=sqlc.arg(id) AND u.id=w.user_id AND w.status='awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id));
+
+-- name: PublishSpeakingReview :execrows
+UPDATE speaking_sessions s SET status='completed', report=sqlc.arg(report), error_code='',
+  reviewed_by=sqlc.arg(admin_id), reviewed_at=now(), updated_at=now()
+FROM users u
+WHERE s.id=sqlc.arg(id) AND u.id=s.user_id AND s.status='awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id));

@@ -187,6 +187,27 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		respond(w, 200, map[string]any{"centre": v})
 	})))
+	// Marking. A centre with AI switched off assesses its own students' work
+	// here; a platform administrator has no students of their own to mark.
+	mux.Handle("GET /api/v1/admin/marking", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, e := h.service.ListMarking(r.Context(), AdminFromContext(r.Context()))
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 200, v)
+	})))
+	mux.Handle("POST /api/v1/admin/marking/{skill}/{work_id}", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input app.Review
+		if !decode(w, r, &input) {
+			return
+		}
+		if e := h.service.PublishReview(r.Context(), AdminFromContext(r.Context()), r.PathValue("skill"), r.PathValue("work_id"), input); e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		w.WriteHeader(204)
+	})))
 	// A centre's administrators. Provisioning these was a SQL job; it is the
 	// one step between creating a centre and handing it over, so it belongs on
 	// the same screen as the centre itself.
@@ -320,6 +341,10 @@ func (h *Handler) failCentre(w http.ResponseWriter, e error) {
 		fail(w, 403, e.Error())
 	case errors.Is(e, app.ErrInvalidCentre), errors.Is(e, app.ErrCentreTaken):
 		fail(w, 422, e.Error())
+	case errors.Is(e, app.ErrInvalidReview):
+		fail(w, 422, e.Error())
+	case errors.Is(e, app.ErrReviewNotFound):
+		fail(w, 404, e.Error())
 	case errors.Is(e, app.ErrCentreNotFound), errors.Is(e, app.ErrAdminNotFound):
 		fail(w, 404, e.Error())
 	case errors.Is(e, app.ErrAdminEmailTaken):

@@ -833,6 +833,87 @@ func TestLearningIntegration(t *testing.T) {
 	if onStatus != "queued" {
 		t.Fatalf("a centre that uses AI had its essay parked: %q", onStatus)
 	}
+	// The centre marks it, and the student reads the result. Without this the
+	// work is captured and nobody can ever act on it.
+	if _, e = adminService.Create(ctx, "manual-admin@example.com", "Manual Admin", "manual-admin-password"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = pool.Exec(ctx, "UPDATE admins SET centre_id=$1 WHERE email='manual-admin@example.com'", offCentre); e != nil {
+		t.Fatal(e)
+	}
+	manualAdmin := adminLogin("manual-admin@example.com", "manual-admin-password")
+	queue := request("GET", "/api/v1/admin/marking", nil, manualAdmin, 200)
+	var marking struct {
+		Writing []struct {
+			ID, Essay string
+			Student   string `json:"student_name"`
+		} `json:"writing"`
+	}
+	raw, _ := json.Marshal(map[string]json.RawMessage{"writing": queue["writing"]})
+	json.Unmarshal(raw, &marking)
+	if len(marking.Writing) != 1 || marking.Writing[0].ID != offDraft.ID || marking.Writing[0].Essay == "" {
+		t.Fatalf("the centre's marking queue does not hold its student's essay: %+v", marking.Writing)
+	}
+	// The platform administrator has no students of their own to mark, and
+	// another centre's marker sees nothing of this one.
+	request("GET", "/api/v1/admin/marking", nil, platformAdmin, 403)
+	if other := request("GET", "/api/v1/admin/marking", nil, alphaAdmin, 200); len(other["writing"]) > 2 {
+		var others []struct{ ID string }
+		json.Unmarshal(other["writing"], &others)
+		for _, v := range others {
+			if v.ID == offDraft.ID {
+				t.Fatal("another centre's marker can see this essay")
+			}
+		}
+	}
+
+	review := map[string]any{
+		"overall": 6.5, "summary": "Clear argument, some repetition in the middle paragraphs.",
+		"criteria": []map[string]any{
+			{"key": "task_achievement", "score": 6.5, "reason": "Addresses both parts.", "how_to_improve": "Develop the second reason."},
+			{"key": "coherence_cohesion", "score": 6, "reason": "Paragraphs are signposted.", "how_to_improve": "Vary linking phrases."},
+			{"key": "lexical_resource", "score": 7, "reason": "Good topic vocabulary.", "how_to_improve": "Avoid repeating 'transport'."},
+			{"key": "grammar", "score": 6.5, "reason": "Mostly accurate.", "how_to_improve": "Check article use."},
+		},
+		"strengths": []string{"Clear position"}, "next_steps": []string{"Practise paraphrasing"},
+	}
+	// Bands are half steps, and a marker cannot publish onto another centre.
+	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, map[string]any{"overall": 6.3, "summary": "x", "criteria": review["criteria"]}, manualAdmin, 422)
+	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, review, alphaAdmin, 404)
+	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, review, manualAdmin, 204)
+	// Publishing twice is a miss: the work is no longer awaiting review.
+	request("POST", "/api/v1/admin/marking/writing/"+offDraft.ID, review, manualAdmin, 404)
+
+	marked := request("GET", "/api/v1/writing/submissions/"+offDraft.ID, nil, offCookie, 200)
+	var markedBack struct {
+		Status string `json:"status"`
+		Report struct {
+			Overall      float64 `json:"overall"`
+			ModelVersion string  `json:"model_version"`
+			Summary      string  `json:"summary"`
+		} `json:"report"`
+	}
+	full, _ := json.Marshal(marked)
+	json.Unmarshal(full, &markedBack)
+	if markedBack.Status != "completed" || markedBack.Report.Overall != 6.5 {
+		t.Fatalf("the student cannot read their marked report: %+v", markedBack)
+	}
+	// A report a person wrote must never read as one a model produced.
+	var marker string
+	if e = pool.QueryRow(ctx, "SELECT coalesce(report->>'model_version','') FROM writing_submissions WHERE id=$1", offDraft.ID).Scan(&marker); e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(marker, "Manual Admin") {
+		t.Fatalf("a marked report does not name its marker: %q", marker)
+	}
+	var reviewer string
+	if e = pool.QueryRow(ctx, "SELECT coalesce(reviewed_by::text,'') FROM writing_submissions WHERE id=$1", offDraft.ID).Scan(&reviewer); e != nil {
+		t.Fatal(e)
+	}
+	if reviewer == "" {
+		t.Fatal("a marked report does not record who marked it")
+	}
+
 	t.Log("AI entitlement: essays parked, interviews read not heard, live examiner closed, AI centres unaffected")
 
 	t.Log("learning centres: per-centre libraries, closed curricula, one-way joining, admin confinement and platform-only centre management passed")

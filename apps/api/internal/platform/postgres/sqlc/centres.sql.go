@@ -175,6 +175,144 @@ func (q *Queries) ListCentres(ctx context.Context) ([]ListCentresRow, error) {
 	return items, nil
 }
 
+const listSpeakingAwaitingReview = `-- name: ListSpeakingAwaitingReview :many
+SELECT s.id, s.user_id, u.display_name, s.topic, s.updated_at,
+  (SELECT count(*) FROM speaking_turns t WHERE t.session_id = s.id AND t.answered)::bigint AS answers
+FROM speaking_sessions s JOIN users u ON u.id = s.user_id
+WHERE s.status = 'awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $1)
+ORDER BY s.updated_at LIMIT 200
+`
+
+type ListSpeakingAwaitingReviewRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	DisplayName string             `json:"display_name"`
+	Topic       string             `json:"topic"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	Answers     int64              `json:"answers"`
+}
+
+func (q *Queries) ListSpeakingAwaitingReview(ctx context.Context, adminID pgtype.UUID) ([]ListSpeakingAwaitingReviewRow, error) {
+	rows, err := q.db.Query(ctx, listSpeakingAwaitingReview, adminID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSpeakingAwaitingReviewRow{}
+	for rows.Next() {
+		var i ListSpeakingAwaitingReviewRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.DisplayName,
+			&i.Topic,
+			&i.UpdatedAt,
+			&i.Answers,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWritingAwaitingReview = `-- name: ListWritingAwaitingReview :many
+SELECT w.id, w.user_id, u.display_name, w.prompt, w.essay, w.updated_at
+FROM writing_submissions w JOIN users u ON u.id = w.user_id
+WHERE w.status = 'awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $1)
+ORDER BY w.updated_at LIMIT 200
+`
+
+type ListWritingAwaitingReviewRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	DisplayName string             `json:"display_name"`
+	Prompt      string             `json:"prompt"`
+	Essay       string             `json:"essay"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Work a centre must mark itself. Scoped to the administrator's own centre, so
+// a marker only ever sees their own students' work.
+func (q *Queries) ListWritingAwaitingReview(ctx context.Context, adminID pgtype.UUID) ([]ListWritingAwaitingReviewRow, error) {
+	rows, err := q.db.Query(ctx, listWritingAwaitingReview, adminID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWritingAwaitingReviewRow{}
+	for rows.Next() {
+		var i ListWritingAwaitingReviewRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.DisplayName,
+			&i.Prompt,
+			&i.Essay,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const publishSpeakingReview = `-- name: PublishSpeakingReview :execrows
+UPDATE speaking_sessions s SET status='completed', report=$1, error_code='',
+  reviewed_by=$2, reviewed_at=now(), updated_at=now()
+FROM users u
+WHERE s.id=$3 AND u.id=s.user_id AND s.status='awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $2)
+`
+
+type PublishSpeakingReviewParams struct {
+	Report  []byte      `json:"report"`
+	AdminID pgtype.UUID `json:"admin_id"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) PublishSpeakingReview(ctx context.Context, arg PublishSpeakingReviewParams) (int64, error) {
+	result, err := q.db.Exec(ctx, publishSpeakingReview, arg.Report, arg.AdminID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const publishWritingReview = `-- name: PublishWritingReview :execrows
+UPDATE writing_submissions w SET status='completed', report=$1, error_code='',
+  reviewed_by=$2, reviewed_at=now(), updated_at=now()
+FROM users u
+WHERE w.id=$3 AND u.id=w.user_id AND w.status='awaiting_review'
+  AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = $2)
+`
+
+type PublishWritingReviewParams struct {
+	Report  []byte      `json:"report"`
+	AdminID pgtype.UUID `json:"admin_id"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+// Publishing a marked report. The centre match is part of the update, so a
+// marker cannot publish onto another centre's student, and 'awaiting_review'
+// is required so this can never overwrite a report a model produced.
+func (q *Queries) PublishWritingReview(ctx context.Context, arg PublishWritingReviewParams) (int64, error) {
+	result, err := q.db.Exec(ctx, publishWritingReview, arg.Report, arg.AdminID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const studentAIEnabled = `-- name: StudentAIEnabled :one
 SELECT coalesce((SELECT c.ai_enabled FROM centres c WHERE c.id = u.centre_id), true)::boolean
 FROM users u WHERE u.id = $1 AND u.deleted_at IS NULL
