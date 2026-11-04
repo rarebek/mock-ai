@@ -710,6 +710,88 @@ func TestLearningIntegration(t *testing.T) {
 	// Re-keying cannot cross centres either.
 	request("PUT", "/api/v1/admin/centres/"+centreA+"/admins/"+provisioned.ID, map[string]any{"reset_password": true}, platformAdmin, 404)
 
+	// The dashboard was global: a centre administrator saw every student on the
+	// platform in its headline figures.
+	centreDash := request("GET", "/api/v1/admin/dashboard", nil, alphaAdmin, 200)
+	platformDash := request("GET", "/api/v1/admin/dashboard", nil, platformAdmin, 200)
+	readUsers := func(body map[string]json.RawMessage) int64 {
+		t.Helper()
+		var v struct {
+			Summary struct {
+				Users int64 `json:"users"`
+			} `json:"summary"`
+		}
+		raw, _ := json.Marshal(body)
+		json.Unmarshal(raw, &v)
+		return v.Summary.Users
+	}
+	centreUsers, platformUsers := readUsers(centreDash), readUsers(platformDash)
+	if centreUsers != 1 {
+		t.Fatalf("a centre administrator's dashboard counted %d students, not just their own", centreUsers)
+	}
+	if platformUsers == 0 || platformUsers == centreUsers {
+		t.Fatalf("the platform dashboard should count the unattached students, got %d", platformUsers)
+	}
+
+	// Login and /admin/me must describe the same administrator. They did not:
+	// login omitted the centre, so the panel offered a centre administrator
+	// the platform-only screens until the next page load.
+	alphaLoginBody := `{"email":"alpha-admin@example.com","password":"alpha-admin-password"}`
+	loginReq := httptest.NewRequest("POST", "/api/v1/admin/auth/login", strings.NewReader(alphaLoginBody))
+	loginReq.Header.Set("Origin", "http://localhost")
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	var loggedIn struct {
+		Admin struct {
+			CentreID    string   `json:"centre_id"`
+			CentreName  string   `json:"centre_name"`
+			Role        string   `json:"role"`
+			Permissions []string `json:"permissions"`
+		} `json:"admin"`
+	}
+	json.Unmarshal(loginRes.Body.Bytes(), &loggedIn)
+	if loggedIn.Admin.CentreID != centreA || loggedIn.Admin.Role != "centre" {
+		t.Fatalf("login does not describe the administrator it signed in: %+v", loggedIn.Admin)
+	}
+	has := func(list []string, want string) bool {
+		for _, v := range list {
+			if v == want {
+				return true
+			}
+		}
+		return false
+	}
+	if has(loggedIn.Admin.Permissions, "centres") || !has(loggedIn.Admin.Permissions, "marking") {
+		t.Fatalf("a centre administrator was granted the wrong tabs: %v", loggedIn.Admin.Permissions)
+	}
+	me := request("GET", "/api/v1/admin/me", nil, alphaAdmin, 200)
+	var fromMe struct {
+		Admin struct {
+			CentreID    string   `json:"centre_id"`
+			Role        string   `json:"role"`
+			Permissions []string `json:"permissions"`
+		} `json:"admin"`
+	}
+	meRaw, _ := json.Marshal(me)
+	json.Unmarshal(meRaw, &fromMe)
+	if fromMe.Admin.CentreID != loggedIn.Admin.CentreID || fromMe.Admin.Role != loggedIn.Admin.Role ||
+		len(fromMe.Admin.Permissions) != len(loggedIn.Admin.Permissions) {
+		t.Fatalf("login and /admin/me disagree: %+v vs %+v", loggedIn.Admin, fromMe.Admin)
+	}
+
+	// A centre administrator reads their own centre, including the invite link.
+	mine := request("GET", "/api/v1/admin/my-centre", nil, alphaAdmin, 200)
+	var myCentre struct {
+		ID       string `json:"id"`
+		JoinCode string `json:"join_code"`
+	}
+	json.Unmarshal(mine["centre"], &myCentre)
+	if myCentre.ID != centreA || myCentre.JoinCode == "" {
+		t.Fatalf("a centre administrator cannot read their own centre: %+v", myCentre)
+	}
+	// A platform administrator has no centre of their own to read.
+	request("GET", "/api/v1/admin/my-centre", nil, platformAdmin, 404)
+
 	// The authoring side leaks in the other direction: what a centre's
 	// administrator creates must land in their centre, and what they can see
 	// must stop at its edge.

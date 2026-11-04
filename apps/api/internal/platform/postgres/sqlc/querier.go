@@ -15,8 +15,12 @@ type Querier interface {
 	// The same question for an administrator, used to close the PDF import.
 	AdminAIEnabled(ctx context.Context, id pgtype.UUID) (bool, error)
 	AdminContentBreakdown(ctx context.Context, adminID pgtype.UUID) ([]AdminContentBreakdownRow, error)
-	AdminDashboardSummary(ctx context.Context) (AdminDashboardSummaryRow, error)
-	AdminDashboardTrend(ctx context.Context) ([]AdminDashboardTrendRow, error)
+	// Every figure here is scoped to the administrator's own centre; a platform
+	// administrator, who has no centre, sees the students and content that belong
+	// to no centre. The scope is read from the administrator's own row, the same
+	// way every other admin query derives it.
+	AdminDashboardSummary(ctx context.Context, adminID pgtype.UUID) (AdminDashboardSummaryRow, error)
+	AdminDashboardTrend(ctx context.Context, adminID pgtype.UUID) ([]AdminDashboardTrendRow, error)
 	AnswerSpeaking(ctx context.Context, arg AnswerSpeakingParams) (int64, error)
 	ArchiveContentVersions(ctx context.Context, examID pgtype.UUID) error
 	AssignUserRole(ctx context.Context, arg AssignUserRoleParams) error
@@ -154,6 +158,10 @@ type Querier interface {
 	MarkingSpeakingAudio(ctx context.Context, arg MarkingSpeakingAudioParams) (MarkingSpeakingAudioRow, error)
 	// The turns a marker needs to work through for one interview.
 	MarkingSpeakingTurns(ctx context.Context, arg MarkingSpeakingTurnsParams) ([]MarkingSpeakingTurnsRow, error)
+	// The administrator's own centre, for a centre administrator to read. They
+	// cannot list centres or change one, but they do need their own invite link
+	// and to see how their centre is configured.
+	MyCentre(ctx context.Context, adminID pgtype.UUID) (MyCentreRow, error)
 	PrepareSpeakingLive(ctx context.Context, sessionID pgtype.UUID) error
 	PublishContentVersion(ctx context.Context, arg PublishContentVersionParams) (pgtype.UUID, error)
 	PublishSpeakingReview(ctx context.Context, arg PublishSpeakingReviewParams) (int64, error)

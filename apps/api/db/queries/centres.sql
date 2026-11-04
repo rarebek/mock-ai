@@ -100,3 +100,13 @@ JOIN users u ON u.id = s.user_id
 WHERE s.id = sqlc.arg(session_id) AND s.status = 'awaiting_review'
   AND u.centre_id IS NOT DISTINCT FROM (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id))
 ORDER BY t.position;
+
+-- The administrator's own centre, for a centre administrator to read. They
+-- cannot list centres or change one, but they do need their own invite link
+-- and to see how their centre is configured.
+-- name: MyCentre :one
+SELECT c.*,
+  (SELECT count(*) FROM users u WHERE u.centre_id = c.id)::bigint AS student_count,
+  (SELECT count(*) FROM exams e WHERE e.centre_id = c.id)::bigint AS exam_count
+FROM centres c
+WHERE c.id = (SELECT a.centre_id FROM admins a WHERE a.id = sqlc.arg(admin_id));

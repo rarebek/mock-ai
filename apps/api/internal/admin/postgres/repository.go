@@ -114,7 +114,11 @@ func (r *Repository) ReserveLogin(ctx context.Context, email string) (app.Creden
 	if e != nil {
 		return app.Credential{}, e
 	}
-	return app.Credential{Admin: app.Admin{ID: str(v.ID), Email: v.Email, DisplayName: v.DisplayName}, Hash: v.PasswordHash}, nil
+	// The login response has to carry the same identity /admin/me does. It did
+	// not, so the panel saw no centre until the next page load and offered a
+	// centre administrator the platform-only screens in between.
+	return app.Credential{Admin: app.Admin{ID: str(v.ID), Email: v.Email, DisplayName: v.DisplayName,
+		CentreID: optional(v.CentreID), CentreName: v.CentreName}, Hash: v.PasswordHash}, nil
 }
 func (r *Repository) ResetLogin(ctx context.Context, s string) error {
 	v, e := id(s)
@@ -143,15 +147,15 @@ func (r *Repository) DeleteSession(ctx context.Context, hash string) error {
 }
 
 func (r *Repository) Dashboard(ctx context.Context, adminID string) (app.Dashboard, error) {
-	s, e := r.q.AdminDashboardSummary(ctx)
-	if e != nil {
-		return app.Dashboard{}, e
-	}
-	trend, e := r.q.AdminDashboardTrend(ctx)
-	if e != nil {
-		return app.Dashboard{}, e
-	}
 	a, e := id(adminID)
+	if e != nil {
+		return app.Dashboard{}, e
+	}
+	s, e := r.q.AdminDashboardSummary(ctx, a)
+	if e != nil {
+		return app.Dashboard{}, e
+	}
+	trend, e := r.q.AdminDashboardTrend(ctx, a)
 	if e != nil {
 		return app.Dashboard{}, e
 	}
@@ -349,6 +353,24 @@ func (r *Repository) ListCentres(ctx context.Context) ([]app.Centre, error) {
 		out = append(out, centre)
 	}
 	return out, nil
+}
+
+func (r *Repository) MyCentre(ctx context.Context, adminID string) (app.Centre, error) {
+	a, e := id(adminID)
+	if e != nil {
+		return app.Centre{}, app.ErrCentreNotFound
+	}
+	v, e := r.q.MyCentre(ctx, a)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return app.Centre{}, app.ErrCentreNotFound
+	}
+	if e != nil {
+		return app.Centre{}, e
+	}
+	centre := centreOf(db.Centre{ID: v.ID, Slug: v.Slug, Name: v.Name, JoinCode: v.JoinCode,
+		IncludeGlobal: v.IncludeGlobal, AiEnabled: v.AiEnabled, DisabledAt: v.DisabledAt, CreatedAt: v.CreatedAt})
+	centre.Students, centre.Exams = v.StudentCount, v.ExamCount
+	return centre, nil
 }
 
 func (r *Repository) CreateCentre(ctx context.Context, name, slug, code string, includeGlobal, aiEnabled bool) (app.Centre, error) {

@@ -351,6 +351,48 @@ func (q *Queries) MarkingSpeakingTurns(ctx context.Context, arg MarkingSpeakingT
 	return items, nil
 }
 
+const myCentre = `-- name: MyCentre :one
+SELECT c.id, c.slug, c.name, c.join_code, c.include_global, c.disabled_at, c.created_at, c.ai_enabled,
+  (SELECT count(*) FROM users u WHERE u.centre_id = c.id)::bigint AS student_count,
+  (SELECT count(*) FROM exams e WHERE e.centre_id = c.id)::bigint AS exam_count
+FROM centres c
+WHERE c.id = (SELECT a.centre_id FROM admins a WHERE a.id = $1)
+`
+
+type MyCentreRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	Slug          string             `json:"slug"`
+	Name          string             `json:"name"`
+	JoinCode      string             `json:"join_code"`
+	IncludeGlobal bool               `json:"include_global"`
+	DisabledAt    pgtype.Timestamptz `json:"disabled_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	AiEnabled     bool               `json:"ai_enabled"`
+	StudentCount  int64              `json:"student_count"`
+	ExamCount     int64              `json:"exam_count"`
+}
+
+// The administrator's own centre, for a centre administrator to read. They
+// cannot list centres or change one, but they do need their own invite link
+// and to see how their centre is configured.
+func (q *Queries) MyCentre(ctx context.Context, adminID pgtype.UUID) (MyCentreRow, error) {
+	row := q.db.QueryRow(ctx, myCentre, adminID)
+	var i MyCentreRow
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Name,
+		&i.JoinCode,
+		&i.IncludeGlobal,
+		&i.DisabledAt,
+		&i.CreatedAt,
+		&i.AiEnabled,
+		&i.StudentCount,
+		&i.ExamCount,
+	)
+	return i, err
+}
+
 const publishSpeakingReview = `-- name: PublishSpeakingReview :execrows
 UPDATE speaking_sessions s SET status='completed', report=$1, error_code='',
   reviewed_by=$2, reviewed_at=now(), updated_at=now()

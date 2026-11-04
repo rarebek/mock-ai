@@ -34,9 +34,44 @@ type Admin struct {
 	CentreName string `json:"centre_name,omitempty"`
 }
 
+// MarshalJSON adds the derived role and permissions to every response that
+// carries an administrator, so login and /admin/me can never disagree.
+func (a Admin) MarshalJSON() ([]byte, error) {
+	type plain Admin
+	return json.Marshal(struct {
+		plain
+		Role        string   `json:"role"`
+		Permissions []string `json:"permissions"`
+	}{plain(a), a.Role(), a.Permissions()})
+}
+
 // Platform reports whether this administrator owns the platform rather than a
 // single centre.
 func (a Admin) Platform() bool { return a.CentreID == "" }
+
+// Role names what this administrator is, so the panel does not have to infer
+// it from whether a field happens to be empty.
+func (a Admin) Role() string {
+	if a.Platform() {
+		return "platform"
+	}
+	return "centre"
+}
+
+// Permissions lists what this administrator may reach. The server decides and
+// the panel follows: a client that works it out for itself drifts from what
+// the API actually allows, which is how a centre administrator was offered a
+// screen that refused them.
+//
+// This is for showing the right things, never for enforcement. Every route
+// still checks for itself.
+func (a Admin) Permissions() []string {
+	shared := []string{"overview", "students", "exams", "challenges", "vocabulary", "writing", "speaking"}
+	if a.Platform() {
+		return append(shared, "centres")
+	}
+	return append(shared, "marking", "centre")
+}
 
 type Student struct {
 	ID               string     `json:"id"`
@@ -144,6 +179,7 @@ type Repository interface {
 	DeleteSession(context.Context, string) error
 	Dashboard(context.Context, string) (Dashboard, error)
 	ListCentres(context.Context) ([]Centre, error)
+	MyCentre(ctx context.Context, adminID string) (Centre, error)
 	ListMarking(ctx context.Context, adminID string) (Marking, error)
 	PublishReview(ctx context.Context, adminID, skill, id string, report []byte) error
 	MarkingSpeakingTurns(ctx context.Context, adminID, sessionID string) ([]MarkingTurn, error)
@@ -259,6 +295,9 @@ var (
 	ErrCentreNotFound   = errors.New("learning centre not found")
 	ErrAdminEmailTaken  = errors.New("an administrator already uses that email address")
 	ErrAdminNotFound    = errors.New("administrator not found in this centre")
+	// A platform administrator has no students of their own, so marking is not
+	// refused for lack of rank -- there is simply nothing of theirs to mark.
+	ErrNoCentreToMark = errors.New("marking belongs to a centre; a platform administrator has no students of their own")
 )
 
 // CentreAdmin is an administrator of one learning centre.
@@ -275,6 +314,16 @@ type CentreAdmin struct {
 }
 
 var centreSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
+
+// MyCentre is what a centre's own administrator sees: their centre, read
+// only. The invite link is the reason it exists -- without it they cannot
+// onboard a single student.
+func (s *Service) MyCentre(ctx context.Context, actor Admin) (Centre, error) {
+	if actor.Platform() {
+		return Centre{}, ErrCentreNotFound
+	}
+	return s.repository.MyCentre(ctx, actor.ID)
+}
 
 func (s *Service) ListCentres(ctx context.Context, actor Admin) ([]Centre, error) {
 	if !actor.Platform() {
@@ -453,7 +502,7 @@ var ErrInvalidReview = errors.New("a band from 0 to 9 in half steps, a summary, 
 func (s *Service) ListMarking(ctx context.Context, actor Admin) (Marking, error) {
 	// Platform administrators have no students of their own to mark.
 	if actor.Platform() {
-		return Marking{}, ErrNotPlatformAdmin
+		return Marking{}, ErrNoCentreToMark
 	}
 	return s.repository.ListMarking(ctx, actor.ID)
 }
@@ -463,21 +512,21 @@ func (s *Service) ListMarking(ctx context.Context, actor Admin) (Marking, error)
 // with their own sub-scores is making a judgement, not a mistake.
 func (s *Service) MarkingSpeakingTurns(ctx context.Context, actor Admin, sessionID string) ([]MarkingTurn, error) {
 	if actor.Platform() {
-		return nil, ErrNotPlatformAdmin
+		return nil, ErrNoCentreToMark
 	}
 	return s.repository.MarkingSpeakingTurns(ctx, actor.ID, sessionID)
 }
 
 func (s *Service) MarkingSpeakingAudio(ctx context.Context, actor Admin, sessionID string, position int32) ([]byte, error) {
 	if actor.Platform() {
-		return nil, ErrNotPlatformAdmin
+		return nil, ErrNoCentreToMark
 	}
 	return s.repository.MarkingSpeakingAudio(ctx, actor.ID, sessionID, position)
 }
 
 func (s *Service) PublishReview(ctx context.Context, actor Admin, skill, id string, v Review) error {
 	if actor.Platform() {
-		return ErrNotPlatformAdmin
+		return ErrNoCentreToMark
 	}
 	allowed := writingCriteria
 	if skill == "speaking" {

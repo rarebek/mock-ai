@@ -140,6 +140,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	})))
 	// Learning centres. Only a platform administrator reaches these; a centre's
 	// own administrator is scoped to their centre everywhere else.
+	// A centre's own administrator reads their centre here; they have no access
+	// to the list or to anyone else's.
+	mux.Handle("GET /api/v1/admin/my-centre", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v, e := h.service.MyCentre(r.Context(), AdminFromContext(r.Context()))
+		if e != nil {
+			h.failCentre(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"centre": v})
+	})))
 	mux.Handle("GET /api/v1/admin/centres", h.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		v, e := h.service.ListCentres(r.Context(), AdminFromContext(r.Context()))
 		if e != nil {
@@ -364,7 +374,7 @@ func decode(w http.ResponseWriter, r *http.Request, into any) bool {
 
 func (h *Handler) failCentre(w http.ResponseWriter, e error) {
 	switch {
-	case errors.Is(e, app.ErrNotPlatformAdmin):
+	case errors.Is(e, app.ErrNotPlatformAdmin), errors.Is(e, app.ErrNoCentreToMark):
 		fail(w, 403, e.Error())
 	case errors.Is(e, app.ErrInvalidCentre), errors.Is(e, app.ErrCentreTaken):
 		fail(w, 422, e.Error())
