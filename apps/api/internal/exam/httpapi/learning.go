@@ -205,7 +205,7 @@ func (h *Handler) registerLearning(mux *http.ServeMux) {
 		}
 		defer file.Close()
 		data, e := io.ReadAll(io.LimitReader(file, (25<<20)+1))
-		mime := mediaType(data, header.Filename)
+		mime := sniff(data, header.Filename)
 		if e != nil || len(data) > 25<<20 || mime == "" {
 			writeError(w, 400, "invalid_upload", "Upload a valid MP3, PNG or JPEG up to 25 MB")
 			return
@@ -246,4 +246,14 @@ func mediaType(data []byte, filename string) string {
 		return "image/jpeg"
 	}
 	return ""
+}
+
+// sniff identifies an upload and then checks the one place that says what may
+// be stored, so the handler cannot accept something the service will refuse.
+func sniff(data []byte, filename string) string {
+	mime := mediaType(data, filename)
+	if !app.StorableMedia(mime) {
+		return ""
+	}
+	return mime
 }

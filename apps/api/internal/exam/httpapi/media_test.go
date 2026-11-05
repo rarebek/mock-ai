@@ -1,6 +1,10 @@
 package httpapi
 
-import "testing"
+import (
+	"testing"
+
+	app "github.com/own/mock-ai/apps/api/internal/exam/application"
+)
 
 // The extension alone decides nothing: an author who renames a .docx to .png
 // must be refused, and a page photographed on a phone must be accepted.
@@ -31,6 +35,29 @@ func TestMediaTypeAcceptsWhatAuthorsActuallyUpload(t *testing.T) {
 	} {
 		if got := mediaType(c.data, c.filename); got != c.want {
 			t.Errorf("%s: mediaType(%q) = %q, want %q", c.name, c.filename, got, c.want)
+		}
+	}
+}
+
+// The handler used to sniff against one list while the service stored against
+// another, so a JPEG was accepted by the upload endpoint and then refused with
+// "study profile values are invalid". Anything sniff() admits must be storable.
+func TestEverythingSniffedCanBeStored(t *testing.T) {
+	for _, c := range []struct {
+		filename string
+		data     []byte
+	}{
+		{"page-7.png", append([]byte("\x89PNG\r\n\x1a\n"), 0x00)},
+		{"page-7.jpg", []byte{0xff, 0xd8, 0xff, 0xe0}},
+		{"section-1.mp3", []byte("ID3\x04")},
+	} {
+		mime := sniff(c.data, c.filename)
+		if mime == "" {
+			t.Errorf("%s: sniff refused a file the uploader accepts", c.filename)
+			continue
+		}
+		if !app.StorableMedia(mime) {
+			t.Errorf("%s: sniffed as %s, which the service will not store", c.filename, mime)
 		}
 	}
 }

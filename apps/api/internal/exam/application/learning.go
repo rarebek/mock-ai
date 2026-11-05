@@ -323,9 +323,17 @@ func privateMediaPath(path string) bool {
 	return filepath.Base(path) == id && len(id) == 36
 }
 
+// What may be stored. The transport layer sniffs the bytes and then asks this,
+// so there is one list rather than two that have to be kept in step -- when
+// there were two, a JPEG passed the sniff and was refused here.
+var storableMedia = map[string]bool{"audio/mpeg": true, "image/png": true, "image/jpeg": true}
+
+// StorableMedia reports whether a sniffed media type may be saved.
+func StorableMedia(mime string) bool { return storableMedia[mime] }
+
 func (s *Service) SavePrivateMedia(ctx context.Context, adminID, ownerID, filename, mime string, data []byte) (string, error) {
 	filename = filepath.Base(strings.TrimSpace(filename))
-	if filename == "" || filename == "." || (mime != "audio/mpeg" && mime != "image/png") || len(data) < 128 || len(data) > 25<<20 || (ownerID != "" && len(ownerID) != 36) {
+	if filename == "" || filename == "." || !storableMedia[mime] || len(data) < 128 || len(data) > 25<<20 || (ownerID != "" && len(ownerID) != 36) {
 		return "", ErrInvalidProfile
 	}
 	return s.repository.SavePrivateMedia(ctx, adminID, ownerID, filename, mime, data)
