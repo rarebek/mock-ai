@@ -192,7 +192,7 @@ func (h *Handler) registerLearning(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/admin/private-media", admin(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, (26<<20)+(1<<20))
 		if e := r.ParseMultipartForm(1 << 20); e != nil {
-			writeError(w, 400, "invalid_upload", "Upload one MP3 or PNG up to 25 MB")
+			writeError(w, 400, "invalid_upload", "Upload one MP3, PNG or JPEG up to 25 MB")
 			return
 		}
 		if r.MultipartForm != nil {
@@ -200,14 +200,14 @@ func (h *Handler) registerLearning(mux *http.ServeMux) {
 		}
 		file, header, e := r.FormFile("file")
 		if e != nil {
-			writeError(w, 400, "invalid_upload", "Choose an MP3 recording or PNG source page")
+			writeError(w, 400, "invalid_upload", "Choose an MP3 recording or a PNG or JPEG source page")
 			return
 		}
 		defer file.Close()
 		data, e := io.ReadAll(io.LimitReader(file, (25<<20)+1))
 		mime := mediaType(data, header.Filename)
 		if e != nil || len(data) > 25<<20 || mime == "" {
-			writeError(w, 400, "invalid_upload", "Upload a valid MP3 or PNG up to 25 MB")
+			writeError(w, 400, "invalid_upload", "Upload a valid MP3, PNG or JPEG up to 25 MB")
 			return
 		}
 		u := adminhttp.AdminFromContext(r.Context())
@@ -238,6 +238,12 @@ func mediaType(data []byte, filename string) string {
 	}
 	if extension == ".png" && len(data) >= 8 && bytes.Equal(data[:8], []byte("\x89PNG\r\n\x1a\n")) {
 		return "image/png"
+	}
+	// A page scan usually arrives as a photograph of a book, and a phone
+	// camera writes JPEG. Refusing it would send the author to a converter
+	// before they could upload the page.
+	if (extension == ".jpg" || extension == ".jpeg") && len(data) >= 3 && bytes.Equal(data[:3], []byte{0xff, 0xd8, 0xff}) {
+		return "image/jpeg"
 	}
 	return ""
 }
