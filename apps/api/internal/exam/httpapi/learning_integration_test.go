@@ -368,6 +368,26 @@ func TestLearningIntegration(t *testing.T) {
 	if media, mediaErr := service.GetPrivateMediaForAdmin(context.Background(), sharedMediaID); mediaErr != nil || media.Filename != "replacement.mp3" {
 		t.Fatal("admin cannot review shared managed audio", mediaErr)
 	}
+	// Every media type the uploader accepts has to survive the column's own
+	// CHECK constraint. A JPEG passed both code-level checks and then failed
+	// here as a 500, which is the one layer a unit test cannot see.
+	for _, page := range []struct {
+		name string
+		mime string
+		data []byte
+	}{
+		{"page-7.png", "image/png", append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{2}, 130)...)},
+		{"page-7.jpg", "image/jpeg", append([]byte{0xff, 0xd8, 0xff}, bytes.Repeat([]byte{3}, 130)...)},
+	} {
+		pageID, pageErr := service.SavePrivateMedia(context.Background(), adminID, "", page.name, page.mime, page.data)
+		if pageErr != nil {
+			t.Fatal("save source page "+page.mime+":", pageErr)
+		}
+		stored, storedErr := service.GetPrivateMediaForAdmin(context.Background(), pageID)
+		if storedErr != nil || stored.MimeType != page.mime || !bytes.Equal(stored.Data, page.data) {
+			t.Fatal("source page did not come back as uploaded: "+page.mime, storedErr)
+		}
+	}
 	if _, e = repo.GetPrivateMedia(context.Background(), student.ID, sharedMediaID); !errors.Is(e, app.ErrNotFound) {
 		t.Fatal("unpublished shared audio leaked to a student", e)
 	}
