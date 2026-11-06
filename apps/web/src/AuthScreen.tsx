@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 import { authAPI, User } from "./auth";
+import { Brand, CheckIcon, ErrorAlert, EyeIcon, EyeOffIcon, GoogleIcon } from "./ui";
 
 type Props = { onAuthenticated: (user: User) => void };
 
@@ -8,15 +9,17 @@ export default function AuthScreen({ onAuthenticated }: Props) {
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const registering = mode === "register";
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
     setSubmitting(true);
     try {
-      const user = mode === "register"
+      const user = registering
         ? await authAPI.register(displayName, email, password)
         : await authAPI.login(email, password);
       onAuthenticated(user);
@@ -35,48 +38,66 @@ export default function AuthScreen({ onAuthenticated }: Props) {
   return (
     <main className="auth-page">
       <section className="auth-intro">
-        <a className="brand" href="#" aria-label="Mock AI home">
-          <span className="brand-mark">M</span><span>mock.ai</span>
-        </a>
-        <div>
-          <p className="eyebrow">IELTS practice</p>
-          <h1>Practice clearly.<br />Progress visibly.</h1>
-          <p>Realistic Listening and Reading mock exams, with results that show where your score comes from.</p>
+        <Brand />
+        <div className="auth-intro-body">
+          <h1>IELTS mock tests that feel like the real exam.</h1>
+          <p>Practise Listening and Reading under real timing, and see your band score the moment you finish.</p>
+          <ul className="feature-list">
+            <li><CheckIcon /> Full-length tests with the official time limits</li>
+            <li><CheckIcon /> Instant band score with every answer marked</li>
+            <li><CheckIcon /> Track your progress in each skill over time</li>
+          </ul>
         </div>
-        <small>Built for focused, repeatable practice.</small>
+        <footer>Answers save automatically as you work.</footer>
       </section>
+
       <section className="auth-panel">
         <div className="auth-card">
-          <p className="eyebrow">Welcome</p>
-          <h2>{mode === "login" ? "Sign in to continue" : "Create your account"}</h2>
+          <Brand />
+          <h2>{registering ? "Create your account" : "Welcome back"}</h2>
           <p className="auth-subtitle">
-            {mode === "login" ? "Your progress is waiting for you." : "Start tracking every practice result."}
+            {registering ? "Start practising in less than a minute." : "Sign in to continue your practice."}
           </p>
-          <form onSubmit={submit}>
-            {mode === "register" && (
-              <label>Full name<input autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} maxLength={100} /></label>
-            )}
-            <label>Email<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
-            <label>Password<input type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} value={password} onChange={(event) => setPassword(event.target.value)} required minLength={10} maxLength={128} /></label>
-            {error && <div className="form-error" role="alert">{error}</div>}
-            <button className="primary-button" disabled={submitting}>
-              {submitting ? "Please wait…" : mode === "login" ? "Sign in" : "Create account"}
-            </button>
-          </form>
-          <div className="auth-divider"><span>or</span></div>
-          <a className="google-button" href="/api/v1/auth/google/start">
+
+          <a className="btn btn-secondary btn-lg btn-block" href="/api/v1/auth/google/start">
             <GoogleIcon /> Continue with Google
           </a>
-          <button className="auth-switch" onClick={switchMode}>
-            {mode === "login" ? "New here? Create an account" : "Already registered? Sign in"}
-          </button>
+          <div className="auth-divider"><span>or use email</span></div>
+
+          <form onSubmit={submit}>
+            {registering && (
+              <label className="field">
+                <span>Full name</span>
+                <input className="input" autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} required minLength={2} maxLength={100} placeholder="Your name" />
+              </label>
+            )}
+            <label className="field">
+              <span>Email</span>
+              <input className="input" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required placeholder="you@example.com" />
+            </label>
+            <div className="field">
+              <label htmlFor="password" className="field-label">Password</label>
+              <div className="input-wrap">
+                <input id="password" className="input" type={showPassword ? "text" : "password"} autoComplete={registering ? "new-password" : "current-password"} value={password} onChange={(event) => setPassword(event.target.value)} required minLength={10} maxLength={128} aria-describedby={registering ? "password-hint" : undefined} />
+                <button type="button" onClick={() => setShowPassword((v) => !v)} aria-label={showPassword ? "Hide password" : "Show password"}>
+                  {showPassword ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+              {registering && <small id="password-hint">At least 10 characters.</small>}
+            </div>
+            {error && <ErrorAlert>{error}</ErrorAlert>}
+            <button className="btn btn-primary btn-lg btn-block" disabled={submitting}>
+              {submitting && <span className="spinner" aria-hidden="true" />}
+              {submitting ? "Please wait…" : registering ? "Create account" : "Sign in"}
+            </button>
+          </form>
+
+          <p className="auth-switch">
+            {registering ? "Already have an account? " : "New to mock.ai? "}
+            <button type="button" onClick={switchMode}>{registering ? "Sign in" : "Create an account"}</button>
+          </p>
         </div>
       </section>
     </main>
   );
 }
-
-function GoogleIcon() {
-  return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.6 12.2c0-.7-.1-1.5-.2-2.2H12v4h5.4a4.6 4.6 0 0 1-2 3v2.6h3.3c1.9-1.8 2.9-4.4 2.9-7.4Z"/><path d="M12 22c2.7 0 5-.9 6.7-2.4L15.4 17c-.9.6-2.1 1-3.4 1a5.9 5.9 0 0 1-5.6-4.1H3v2.7A10 10 0 0 0 12 22Z"/><path d="M6.4 13.9A6 6 0 0 1 6.1 12c0-.7.1-1.3.3-1.9V7.4H3A10 10 0 0 0 2 12c0 1.6.4 3.2 1 4.6l3.4-2.7Z"/><path d="M12 6c1.5 0 2.8.5 3.9 1.5l2.9-2.9A9.8 9.8 0 0 0 12 2a10 10 0 0 0-9 5.4l3.4 2.7A5.9 5.9 0 0 1 12 6Z"/></svg>;
-}
-
