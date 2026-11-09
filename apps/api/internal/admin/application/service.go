@@ -68,7 +68,7 @@ func (a Admin) Role() string {
 func (a Admin) Permissions() []string {
 	shared := []string{"overview", "students", "exams", "challenges", "vocabulary", "writing", "speaking"}
 	if a.Platform() {
-		return append(shared, "centres")
+		return append(shared, "centres", "pricing")
 	}
 	return append(shared, "marking", "centre")
 }

@@ -78,12 +78,12 @@ func (r *Repository) Spend(ctx context.Context, userID, reason, reference string
 	return balance, tx.Commit(ctx)
 }
 
-const purchaseColumns = `id, COALESCE(user_id::text, ''), COALESCE(centre_id::text, ''), package_id, stars, amount_minor, currency, provider,
+const purchaseColumns = `id, COALESCE(user_id::text, ''), COALESCE(centre_id::text, ''), COALESCE(admin_id::text, ''), package_id, stars, amount_minor, currency, provider,
 	COALESCE(provider_reference, ''), status, COALESCE(failure_reason, ''), created_at, settled_at`
 
 func scanPurchase(row pgx.Row) (app.Purchase, error) {
 	var p app.Purchase
-	err := row.Scan(&p.ID, &p.UserID, &p.CentreID, &p.PackageID, &p.Stars, &p.AmountMinor, &p.Currency, &p.Provider,
+	err := row.Scan(&p.ID, &p.UserID, &p.CentreID, &p.AdminID, &p.PackageID, &p.Stars, &p.AmountMinor, &p.Currency, &p.Provider,
 		&p.ProviderReference, &p.Status, &p.FailureReason, &p.CreatedAt, &p.SettledAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Purchase{}, app.ErrNotFound
@@ -93,9 +93,9 @@ func scanPurchase(row pgx.Row) (app.Purchase, error) {
 
 func (r *Repository) CreatePurchase(ctx context.Context, p app.Purchase) (app.Purchase, error) {
 	return scanPurchase(r.pool.QueryRow(ctx, `INSERT INTO star_purchases
-		(user_id, package_id, stars, amount_minor, currency, provider)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+purchaseColumns,
-		p.UserID, p.PackageID, p.Stars, p.AmountMinor, p.Currency, p.Provider))
+		(user_id, centre_id, admin_id, package_id, stars, amount_minor, currency, provider)
+		VALUES (NULLIF($1, '')::uuid, NULLIF($2, '')::uuid, NULLIF($3, '')::uuid, $4, $5, $6, $7, $8) RETURNING `+purchaseColumns,
+		p.UserID, p.CentreID, p.AdminID, p.PackageID, p.Stars, p.AmountMinor, p.Currency, p.Provider))
 }
 
 func (r *Repository) SetProviderReference(ctx context.Context, purchaseID, reference string) error {
@@ -282,6 +282,60 @@ func (r *Repository) CentreActivity(ctx context.Context, centreID string, limit 
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+func (r *Repository) Pricing(ctx context.Context) (app.Pricing, error) {
+	var p app.Pricing
+	err := r.pool.QueryRow(ctx, `SELECT price_per_star_minor, currency, updated_at FROM star_settings WHERE id`).Scan(&p.PricePerStarMinor, &p.Currency, &p.UpdatedAt)
+	return p, err
+}
+
+func (r *Repository) SetPricing(ctx context.Context, pricePerStarMinor int64, adminID string) (app.Pricing, error) {
+	var p app.Pricing
+	err := r.pool.QueryRow(ctx, `UPDATE star_settings SET price_per_star_minor = $1, updated_by = NULLIF($2, '')::uuid, updated_at = now()
+		WHERE id RETURNING price_per_star_minor, currency, updated_at`, pricePerStarMinor, adminID).Scan(&p.PricePerStarMinor, &p.Currency, &p.UpdatedAt)
+	return p, err
+}
+
+func (r *Repository) RecentPurchases(ctx context.Context, limit int) ([]app.PurchaseRow, error) {
+	rows, err := r.pool.Query(ctx, `SELECT p.id, COALESCE(p.user_id::text, ''), COALESCE(p.centre_id::text, ''), COALESCE(p.admin_id::text, ''),
+			p.package_id, p.stars, p.amount_minor, p.currency, p.provider, COALESCE(p.provider_reference, ''), p.status,
+			COALESCE(p.failure_reason, ''), p.created_at, p.settled_at,
+			COALESCE(c.name, u.display_name, ''), CASE WHEN p.centre_id IS NOT NULL THEN 'centre' ELSE 'student' END
+		FROM star_purchases p LEFT JOIN users u ON u.id = p.user_id LEFT JOIN centres c ON c.id = p.centre_id
+		ORDER BY p.created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []app.PurchaseRow{}
+	for rows.Next() {
+		var row app.PurchaseRow
+		p := &row.Purchase
+		if err := rows.Scan(&p.ID, &p.UserID, &p.CentreID, &p.AdminID, &p.PackageID, &p.Stars, &p.AmountMinor, &p.Currency, &p.Provider,
+			&p.ProviderReference, &p.Status, &p.FailureReason, &p.CreatedAt, &p.SettledAt, &row.Buyer, &row.BuyerKind); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (r *Repository) PendingPurchases(ctx context.Context, limit int) ([]app.Purchase, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+purchaseColumns+` FROM star_purchases WHERE status = 'pending' ORDER BY created_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []app.Purchase{}
+	for rows.Next() {
+		p, err := scanPurchase(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func looksLikeUUID(s string) bool {

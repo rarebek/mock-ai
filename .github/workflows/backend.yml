@@ -136,11 +136,20 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REDIRECT_URL: ${{ secrets.GOOGLE_REDIRECT_URL }}
+          # Stars are sold through inPAY when PAYMENT_PROVIDER (a repository
+          # variable) is "inpay" and INPAY_SECRET_KEY holds an sk_live_ key.
+          PAYMENT_PROVIDER: ${{ vars.PAYMENT_PROVIDER || 'none' }}
+          INPAY_SECRET_KEY: ${{ secrets.INPAY_SECRET_KEY }}
+          INPAY_WEBHOOK_SECRET: ${{ secrets.INPAY_WEBHOOK_SECRET }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           if [ -z "$DATABASE_URL" ] || [ -z "$SESSION_SECRET" ] || [ -z "$WEB_ORIGIN" ]; then
             echo "::error::APP_DATABASE_URL, APP_SESSION_SECRET, and APP_WEB_ORIGIN are required"
+            exit 1
+          fi
+          if [ "$PAYMENT_PROVIDER" = "inpay" ] && [ -z "$INPAY_SECRET_KEY" ]; then
+            echo "::error::PAYMENT_PROVIDER=inpay requires the INPAY_SECRET_KEY secret"
             exit 1
           fi
           if [ -n "$GOOGLE_CLIENT_ID$GOOGLE_CLIENT_SECRET$GOOGLE_REDIRECT_URL" ] && \
@@ -165,6 +174,9 @@ jobs:
             "GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID" \
             "GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET" \
             "GOOGLE_REDIRECT_URL=$GOOGLE_REDIRECT_URL" \
+            "PAYMENT_PROVIDER=$PAYMENT_PROVIDER" \
+            "INPAY_SECRET_KEY=$INPAY_SECRET_KEY" \
+            "INPAY_WEBHOOK_SECRET=$INPAY_WEBHOOK_SECRET" \
             > /tmp/mock-ai-api.env
           rsync -az -e 'ssh -i ~/.ssh/mock-ai' /tmp/mock-ai-api.env "$VPS_USER@$VPS_HOST:tools/mock-ai/api/.env.next"
           ssh -i ~/.ssh/mock-ai "$VPS_USER@$VPS_HOST" 'chmod 600 ~/tools/mock-ai/api/.env.next && mv ~/tools/mock-ai/api/.env.next ~/tools/mock-ai/api/.env'

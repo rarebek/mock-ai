@@ -3,7 +3,7 @@
 //
 //	GET  /api/v1/stars                     balance, packages, whether sales are open
 //	POST /api/v1/stars/spend               {purpose, reference} → new balance (402 when empty)
-//	POST /api/v1/stars/purchases           {package_id} → checkout_url (503 while payments are off)
+//	POST /api/v1/stars/purchases           {stars} (or legacy {package_id}) → checkout_url (503 while payments are off)
 //	GET  /api/v1/stars/purchases/{id}      one purchase, for the after-payment page
 //	POST /api/v1/payments/{provider}/callback   provider → server, no student session
 //
@@ -11,6 +11,10 @@
 //
 //	GET  /api/v1/admin/centres/{centre_id}/stars          balance + recent activity
 //	POST /api/v1/admin/centres/{centre_id}/stars/grants   {stars, reference, note}, platform admins only
+//	POST /api/v1/admin/centres/{centre_id}/stars/purchases {stars} → checkout_url, the centre's own admin
+//	GET  /api/v1/admin/stars/purchases/{id}               a centre purchase, for the after-payment notice
+//	GET  /api/v1/admin/stars                              price, sales status, recent purchases (platform)
+//	PUT  /api/v1/admin/stars/pricing                      {price_per_star_minor} (platform)
 package httpapi
 
 import (
@@ -55,8 +59,11 @@ func fail(w http.ResponseWriter, err error) {
 		status, code = http.StatusForbidden, "centre_managed"
 	case errors.Is(err, app.ErrForbidden):
 		status, code = http.StatusForbidden, "forbidden"
-	case errors.Is(err, app.ErrInvalidGrant):
+	case errors.Is(err, app.ErrInvalidGrant), errors.Is(err, app.ErrInvalidQuantity), errors.Is(err, app.ErrInvalidPrice):
 		status, code = http.StatusUnprocessableEntity, "invalid"
+	case errors.Is(err, app.ErrProvider):
+		status, code = http.StatusBadGateway, "payment_provider_error"
+		message = app.ErrProvider.Error()
 	case errors.Is(err, app.ErrPaymentsOff):
 		status, code = http.StatusServiceUnavailable, "payments_unavailable"
 	case errors.Is(err, app.ErrNotFound):
@@ -64,7 +71,7 @@ func fail(w http.ResponseWriter, err error) {
 	case errors.Is(err, app.ErrUnknownPackage), errors.Is(err, app.ErrUnknownPurpose), errors.Is(err, app.ErrInvalidRef):
 		status, code = http.StatusUnprocessableEntity, "invalid"
 	}
-	if status != 500 {
+	if status != 500 && code != "payment_provider_error" {
 		message = err.Error()
 	}
 	reply(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
@@ -110,13 +117,22 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	student("POST /api/v1/stars/purchases", func(w http.ResponseWriter, r *http.Request, userID string) {
 		var in struct {
+			Stars     int32  `json:"stars"`
 			PackageID string `json:"package_id"`
 		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
-			fail(w, app.ErrUnknownPackage)
+			fail(w, app.ErrInvalidQuantity)
 			return
 		}
-		v, err := h.s.StartPurchase(r.Context(), userID, in.PackageID)
+		if in.Stars == 0 && in.PackageID != "" {
+			n, ok := app.ParsePackageID(in.PackageID)
+			if !ok {
+				fail(w, app.ErrUnknownPackage)
+				return
+			}
+			in.Stars = n
+		}
+		v, err := h.s.StartPurchase(r.Context(), userID, in.Stars)
 		if err != nil {
 			fail(w, err)
 			return
@@ -165,6 +181,56 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		reply(w, 201, v)
+	})
+
+	admin("POST /api/v1/admin/centres/{centre_id}/stars/purchases", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		var in struct {
+			Stars int32 `json:"stars"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
+			fail(w, app.ErrInvalidQuantity)
+			return
+		}
+		v, err := h.s.StartCentrePurchase(r.Context(), actor, r.PathValue("centre_id"), in.Stars)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 201, v)
+	})
+
+	admin("GET /api/v1/admin/stars/purchases/{id}", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		v, err := h.s.CentrePurchase(r.Context(), actor, r.PathValue("id"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 200, map[string]any{"purchase": v})
+	})
+
+	admin("GET /api/v1/admin/stars", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		v, err := h.s.StarsAdmin(r.Context(), actor)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 200, v)
+	})
+
+	admin("PUT /api/v1/admin/stars/pricing", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		var in struct {
+			PricePerStarMinor int64 `json:"price_per_star_minor"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
+			fail(w, app.ErrInvalidPrice)
+			return
+		}
+		v, err := h.s.SetPricing(r.Context(), actor, in.PricePerStarMinor)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 200, map[string]any{"pricing": v})
 	})
 
 	// Server-to-server: authenticated by the provider's own signature, which

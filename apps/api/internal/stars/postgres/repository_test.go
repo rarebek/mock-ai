@@ -262,3 +262,43 @@ func TestCentrePurchaseCreditsTheCentre(t *testing.T) {
 		t.Fatalf("unknown centre: %v", err)
 	}
 }
+
+func TestPricingStartsAtThirtyThousandAndCanChange(t *testing.T) {
+	pool, repo := setup(t)
+	ctx := context.Background()
+	original, err := repo.Pricing(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = repo.SetPricing(ctx, original.PricePerStarMinor, "") })
+	_, _ = pool.Exec(ctx, `UPDATE star_settings SET price_per_star_minor = 3000000`)
+	if p, _ := repo.Pricing(ctx); p.PricePerStarMinor != 3_000_000 || p.Currency != "UZS" {
+		t.Fatalf("default pricing %+v", p)
+	}
+	if p, err := repo.SetPricing(ctx, 2_500_000, ""); err != nil || p.PricePerStarMinor != 2_500_000 {
+		t.Fatalf("set pricing: %+v %v", p, err)
+	}
+}
+
+func TestCentrePurchaseIsListedWithTheCentreAsBuyer(t *testing.T) {
+	pool, repo := setup(t)
+	ctx := context.Background()
+	centre := newCentre(t, pool)
+	p, err := repo.CreatePurchase(ctx, app.Purchase{CentreID: centre, PackageID: "stars-40", Stars: 40, AmountMinor: 120_000_000, Currency: "UZS", Provider: "inpay"})
+	if err != nil || p.CentreID != centre || p.UserID != "" {
+		t.Fatalf("create centre purchase: %+v %v", p, err)
+	}
+	rows, err := repo.RecentPurchases(ctx, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == p.ID {
+			if row.BuyerKind != "centre" || row.Buyer != "Stars Test Centre" {
+				t.Fatalf("row %+v", row)
+			}
+			return
+		}
+	}
+	t.Fatal("centre purchase not listed")
+}

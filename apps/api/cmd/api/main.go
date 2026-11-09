@@ -93,12 +93,16 @@ func main() {
 	if provider, ok := speakingProvider.(speakinglive.Provider); ok {
 		speakingHandler.Live = &speakinglive.Service{Repo: speakingService.Repo.(*speakingpg.Repository), Provider: provider, Model: cfg.GeminiSpeakingLiveModel, Log: logger}
 	}
-	paymentProvider, err := payment.New(cfg.PaymentProvider)
+	paymentProvider, err := payment.New(payment.Config{
+		Provider: cfg.PaymentProvider, PublicBaseURL: cfg.WebOrigin,
+		InpaySecretKey: cfg.InpaySecretKey, InpayWebhookSecret: cfg.InpayWebhookSecret, InpayBaseURL: cfg.InpayBaseURL,
+		Log: logger,
+	})
 	if err != nil {
 		logger.Error("initialize payment provider", "error", err)
 		os.Exit(1)
 	}
-	starsService := starsapp.New(starspg.New(pool), paymentProvider, starsapp.DefaultPackages(), 1, cfg.WebOrigin)
+	starsService := starsapp.New(starspg.New(pool), paymentProvider, 1, cfg.WebOrigin, cfg.AdminOrigin)
 	starsHandler := starshttp.New(starsService, identityHandler, adminHandler, cfg.WebOrigin)
 	bot, err := telegrambot.New(cfg.TelegramBotToken, cfg.TelegramMiniAppURL, cfg.WebOrigin, identityService, logger)
 	if err != nil {
@@ -118,6 +122,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go writingService.Run(ctx)
+	go starsService.Run(ctx)
 	examService.RunImports(ctx)
 	speakingService.Run(ctx)
 	if bot != nil {

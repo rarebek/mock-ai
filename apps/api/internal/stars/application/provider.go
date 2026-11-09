@@ -42,6 +42,21 @@ type Checkout struct {
 	Reference string
 }
 
+// StatusChecker is implemented by providers that can be asked for a
+// payment's state directly. The service uses it to settle a purchase the
+// callback has not settled yet, and providers use it to confirm a callback.
+type StatusChecker interface {
+	Status(ctx context.Context, p Purchase) (PaymentState, error)
+}
+
+type PaymentState string
+
+const (
+	StatePending PaymentState = "pending"
+	StatePaid    PaymentState = "paid"
+	StateFailed  PaymentState = "failed"
+)
+
 // Settler is the only way a Provider can change a purchase.
 type Settler interface {
 	Purchase(ctx context.Context, purchaseID string) (Purchase, error)

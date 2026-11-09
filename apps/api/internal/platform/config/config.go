@@ -29,7 +29,10 @@ type Config struct {
 	SessionTTL               time.Duration
 	SecureCookie             bool
 	// PaymentProvider selects how stars are sold ("" or "none" = coming soon).
-	PaymentProvider string
+	PaymentProvider    string
+	InpaySecretKey     string
+	InpayWebhookSecret string
+	InpayBaseURL       string
 }
 
 func Load() (Config, error) {
@@ -45,6 +48,9 @@ func Load() (Config, error) {
 		GeminiSpeakingLiveModel:  envOr("GEMINI_SPEAKING_LIVE_MODEL", "gemini-3.8-live"),
 		WebOrigin:                envOr("WEB_ORIGIN", "http://localhost:5173"),
 		PaymentProvider:          envOr("PAYMENT_PROVIDER", "none"),
+		InpaySecretKey:           os.Getenv("INPAY_SECRET_KEY"),
+		InpayWebhookSecret:       os.Getenv("INPAY_WEBHOOK_SECRET"),
+		InpayBaseURL:             envOr("INPAY_API_BASE", "https://inpay.uz/api/v2"),
 		TelegramBotToken:         os.Getenv("TELEGRAM_BOT_TOKEN"),
 		GoogleClientID:           os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret:       os.Getenv("GOOGLE_CLIENT_SECRET"),

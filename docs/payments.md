@@ -15,7 +15,7 @@ Students spend **stars** to sit full mock exams.
 
 Students who belong to a learning centre (`users.centre_id`) do **not** have personal stars. Their centre holds one shared balance (`star_centre_wallets`) and each full mock a centre student starts takes one star from it; the ledger row records the student and the centre, so the centre can see who used what. Centre students cannot buy stars (`403 centre_managed`); when the centre is empty they get `402 centre_out_of_stars` and are told to ask their centre.
 
-Centres start at 0 stars. Until centres can pay online, a **platform administrator** adds stars in the admin panel (Centres → a centre → Stars), with an optional note such as an invoice number. A centre's own administrator sees the balance and recent activity under "Your centre" but cannot add stars. `star_purchases.centre_id` and `SettlePaid` already credit a centre, so centre checkout can be added later without schema changes.
+Centres start at 0 stars. A centre's administrator buys stars online under "Your centre" (when sales are open), and a **platform administrator** can also add stars in the admin panel (Centres → a centre → Stars), with an optional note such as an invoice number. A centre's own administrator sees the balance and recent activity under "Your centre" but cannot add stars. `star_purchases.centre_id` and `SettlePaid` already credit a centre, so centre checkout can be added later without schema changes.
 
 Every change is written to `star_ledger` with its reason (`welcome`, `full_mock`, `purchase`, `grant`, `refund`), so any balance can be explained.
 
@@ -23,19 +23,50 @@ Every change is written to `star_ledger` with its reason (`welcome`, `full_mock`
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/api/v1/stars` | `{source: "personal"\|"centre", centre_name, balance, full_mock_cost, packages, payments_available}` |
+| GET | `/api/v1/stars` | `{source: "personal"\|"centre", centre_name, balance, full_mock_cost, price_per_star_minor, max_stars, packages, payments_available}` |
 | POST | `/api/v1/stars/spend` | `{purpose: "full_mock", reference}` → `{balance}`; **402** `insufficient_stars` when empty |
-| POST | `/api/v1/stars/purchases` | `{package_id}` → `{purchase, checkout_url}`; **503** `payments_unavailable` while sales are closed |
+| POST | `/api/v1/stars/purchases` | `{stars}` → `{purchase, checkout_url}`; **503** `payments_unavailable` while sales are closed; **502** `payment_provider_error` if inPAY refuses |
 | GET | `/api/v1/stars/purchases/{id}` | the student's own purchase, for the after-payment page |
 | GET | `/api/v1/admin/centres/{centre_id}/stars` | admin session; balance + last 50 changes; a centre admin only for their own centre |
 | POST | `/api/v1/admin/centres/{centre_id}/stars/grants` | admin session, platform admins only; `{stars, reference, note}`; a repeated reference counts once |
+| POST | `/api/v1/admin/centres/{centre_id}/stars/purchases` | the centre's own administrator; `{stars}` → `{purchase, checkout_url}` |
+| GET | `/api/v1/admin/stars/purchases/{id}` | a centre purchase, for the panel's after-payment notice |
+| GET | `/api/v1/admin/stars` | platform admins: pricing, whether sales are open, last 50 purchases |
+| PUT | `/api/v1/admin/stars/pricing` | platform admins: `{price_per_star_minor}` |
 | POST | `/api/v1/payments/{provider}/callback` | provider → server; no student session; only the configured provider answers |
 
 After paying, the provider sends the student to `<WEB_ORIGIN>/?purchase=<id>#stars`. The page polls the purchase until the callback has settled it.
 
 ## Prices
 
-Packages are in `stars/application/packages.go` (`stars-1`, `stars-5`, `stars-12`). `AmountMinor` is in the currency's minor unit: for UZS, **1 so'm = 100**, so 40 000 so'm is `4_000_000`. While a package's price is 0 it shows "Price coming soon" and cannot be bought, even with a provider configured.
+One star = one full mock. A platform administrator sets its price in the admin panel (**Pricing** tab); it starts at **30 000 so'm** (`star_settings`, migration 26). Students see packages of 1, 5 and 10 stars priced from it; a centre administrator buys any number of stars (up to 5 000) at the same price. Each purchase stores the amount it was created with, so a price change never affects a payment already started.
+
+Amounts are kept in minor units: for UZS **1 so'm = 100**, so 30 000 so'm is `3_000_000`. inPAY charges whole so'm with a minimum of 1 000, so the price must be a whole number of so'm between 1 000 and 10 000 000.
+
+## inPAY
+
+`internal/stars/payment/inpay` sells stars through inPAY API v2.
+
+1. **Checkout**: `POST https://inpay.uz/api/v2/payments/` with `amount` (whole so'm), `return_url`, `webhook_url = <WEB_ORIGIN>/api/v1/payments/inpay/callback`, `metadata.purchase_id`, and `Idempotency-Key: mockai-<purchase id>`. The student (or centre administrator) is sent to the returned `checkout_url`.
+2. **Webhook**: if `INPAY_WEBHOOK_SECRET` is set, `X-Inpay-Signature` is verified (HMAC-SHA256 of `"{t}.{raw body}"`, at most 5 minutes old). Either way the payment is then fetched with our key (`GET /payments/{id}`) and only that answer is trusted: it must belong to the same purchase and have the same amount. `succeeded` credits the stars once; `failed` / `canceled` closes the purchase.
+3. **Return page**: when the buyer comes back, a pending purchase is checked against inPAY directly, so a slow webhook does not leave them waiting.
+4. **Sweep**: every 3 minutes the API re-checks pending purchases (lost webhooks get credited) and expires checkouts left unpaid for 48 hours.
+
+Students return to `<WEB_ORIGIN>/?purchase=<id>#stars`; centre administrators to `<ADMIN_ORIGIN>/?purchase=<id>`, which opens "Your centre".
+
+Refunds are not available through inPAY's API; they are done manually in the inPAY cabinet or through their support.
+
+### Configuration
+
+| Setting | Where | Value |
+| --- | --- | --- |
+| `PAYMENT_PROVIDER` | GitHub repository **variable** | `inpay` to open sales; `none` (default) keeps them closed |
+| `INPAY_SECRET_KEY` | GitHub **secret** | the `sk_live_…` key (never the test key in production) |
+| `INPAY_WEBHOOK_SECRET` | GitHub **secret**, optional | `whsec_…` from `GET /api/v2/webhooks/secret/` |
+
+The live key only works from IP addresses whitelisted in the inPAY cabinet (`/merchant/whitelist/`, "Kassa Strict" mode): the VPS address must be listed. The `return_url` domains (`mock-ai.uz`, `panel.mock-ai.uz`) must be attached to the merchant.
+
+Local testing: run the API with `PAYMENT_PROVIDER=inpay INPAY_SECRET_KEY=sk_test_…`. Test checkout pages accept `8600 0000 0000 0001` (succeeds) and `…0002` (insufficient funds). Webhooks cannot reach localhost, but the return-page check credits the test payment.
 
 ## Connecting a payment provider
 

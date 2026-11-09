@@ -10,6 +10,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"time"
 )
@@ -26,6 +27,9 @@ var (
 	ErrCentreManaged      = errors.New("your learning centre provides your stars, so they cannot be bought here")
 	ErrForbidden          = errors.New("you cannot manage this centre's stars")
 	ErrInvalidGrant       = errors.New("add between 1 and 10000 stars, with a note of at most 200 characters")
+	ErrInvalidQuantity    = errors.New("choose how many stars to buy")
+	ErrInvalidPrice       = errors.New("the price must be a whole number of so'm between 1 000 and 10 000 000")
+	ErrProvider           = errors.New("the payment page could not be opened; please try again in a moment")
 )
 
 // Reasons recorded in the ledger. They match the database CHECK constraint.
@@ -56,6 +60,7 @@ type Purchase struct {
 	Provider          string     `json:"provider"`
 	ProviderReference string     `json:"-"`
 	CentreID          string     `json:"-"`
+	AdminID           string     `json:"-"`
 	Status            string     `json:"status"`
 	FailureReason     string     `json:"failure_reason,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -89,6 +94,19 @@ type Repository interface {
 	// GrantCentre adds stars to a centre once per reference.
 	GrantCentre(ctx context.Context, centreID, adminID string, stars int32, reference, note string) (int32, error)
 	CentreActivity(ctx context.Context, centreID string, limit int) ([]LedgerEntry, error)
+
+	Pricing(ctx context.Context) (Pricing, error)
+	SetPricing(ctx context.Context, pricePerStarMinor int64, adminID string) (Pricing, error)
+	RecentPurchases(ctx context.Context, limit int) ([]PurchaseRow, error)
+	// PendingPurchases lists the oldest unsettled purchases, for the sweep.
+	PendingPurchases(ctx context.Context, limit int) ([]Purchase, error)
+}
+
+// PurchaseRow is a purchase as the platform administrator sees it.
+type PurchaseRow struct {
+	Purchase
+	Buyer     string `json:"buyer"`
+	BuyerKind string `json:"buyer_kind"` // "student" or "centre"
 }
 
 // Centre is the learning centre a student belongs to.
@@ -109,23 +127,24 @@ type LedgerEntry struct {
 }
 
 type Service struct {
-	repo       Repository
-	provider   Provider
-	packages   []Package
-	welcome    int32
-	returnBase string
+	repo            Repository
+	provider        Provider
+	welcome         int32
+	returnBase      string
+	adminReturnBase string
 }
 
-// New builds the service. returnBase is the student app's origin; after
-// paying, the provider sends the student to <returnBase>/?purchase=<id>#stars.
-func New(repo Repository, provider Provider, packages []Package, welcome int32, returnBase string) *Service {
+// New builds the service. After paying, the provider sends a student to
+// <returnBase>/?purchase=<id>#stars and a centre administrator to
+// <adminReturnBase>/?purchase=<id>.
+func New(repo Repository, provider Provider, welcome int32, returnBase, adminReturnBase string) *Service {
 	if provider == nil {
 		provider = Unavailable{}
 	}
 	if welcome < 0 {
 		welcome = 0
 	}
-	return &Service{repo: repo, provider: provider, packages: packages, welcome: welcome, returnBase: returnBase}
+	return &Service{repo: repo, provider: provider, welcome: welcome, returnBase: returnBase, adminReturnBase: adminReturnBase}
 }
 
 // Overview is everything the stars page needs in one request.
@@ -137,9 +156,14 @@ type Overview struct {
 	CentreName        string    `json:"centre_name,omitempty"`
 	Balance           int32     `json:"balance"`
 	FullMockCost      int32     `json:"full_mock_cost"`
+	PricePerStarMinor int64     `json:"price_per_star_minor"`
+	Currency          string    `json:"currency"`
+	MaxStars          int32     `json:"max_stars"`
 	Packages          []Package `json:"packages"`
 	PaymentsAvailable bool      `json:"payments_available"`
 }
+
+func (s *Service) salesOpen(p Pricing) bool { return s.provider.Available() && p.PricePerStarMinor > 0 }
 
 func (s *Service) Overview(ctx context.Context, userID string) (Overview, error) {
 	centre, inCentre, err := s.repo.StudentCentre(ctx, userID)
@@ -157,12 +181,19 @@ func (s *Service) Overview(ctx context.Context, userID string) (Overview, error)
 	if err != nil {
 		return Overview{}, err
 	}
+	pricing, err := s.repo.Pricing(ctx)
+	if err != nil {
+		return Overview{}, err
+	}
 	return Overview{
 		Source:            "personal",
 		Balance:           balance,
 		FullMockCost:      spendCost[ReasonFullMock],
-		Packages:          s.packages,
-		PaymentsAvailable: s.provider.Available(),
+		PricePerStarMinor: pricing.PricePerStarMinor,
+		Currency:          pricing.Currency,
+		MaxStars:          MaxPersonalStars,
+		Packages:          packagesFor(pricing),
+		PaymentsAvailable: s.salesOpen(pricing),
 	}, nil
 }
 
@@ -209,61 +240,123 @@ type CheckoutResult struct {
 	CheckoutURL string   `json:"checkout_url"`
 }
 
-// StartPurchase records a pending purchase and asks the provider for a
-// checkout page. Stars are credited later, by the provider's callback.
-func (s *Service) StartPurchase(ctx context.Context, userID, packageID string) (CheckoutResult, error) {
+// StartPurchase records a student's pending purchase of stars and asks the
+// provider for a checkout page. Stars are credited later, when the provider
+// confirms payment.
+func (s *Service) StartPurchase(ctx context.Context, userID string, stars int32) (CheckoutResult, error) {
 	if _, inCentre, err := s.repo.StudentCentre(ctx, userID); err != nil {
 		return CheckoutResult{}, err
 	} else if inCentre {
 		return CheckoutResult{}, ErrCentreManaged
 	}
-	pkg, ok := s.findPackage(packageID)
-	if !ok {
-		return CheckoutResult{}, ErrUnknownPackage
+	if stars < 1 || stars > MaxPersonalStars {
+		return CheckoutResult{}, ErrInvalidQuantity
 	}
-	if !s.provider.Available() || pkg.AmountMinor <= 0 {
+	return s.checkout(ctx, Purchase{UserID: userID, Stars: stars}, func(id string) string {
+		return s.returnBase + "/?purchase=" + id + "#stars"
+	})
+}
+
+// StartCentrePurchase lets a centre's own administrator buy stars for the
+// centre's students. Platform administrators add stars with a grant instead.
+func (s *Service) StartCentrePurchase(ctx context.Context, actor Actor, centreID string, stars int32) (CheckoutResult, error) {
+	if actor.platform() || actor.CentreID != centreID {
+		return CheckoutResult{}, ErrForbidden
+	}
+	if stars < 1 || stars > MaxCentreStars {
+		return CheckoutResult{}, ErrInvalidQuantity
+	}
+	if _, err := s.repo.EnsureCentreWallet(ctx, centreID); err != nil {
+		return CheckoutResult{}, err
+	}
+	return s.checkout(ctx, Purchase{CentreID: centreID, AdminID: actor.AdminID, Stars: stars}, func(id string) string {
+		return s.adminReturnBase + "/?purchase=" + id
+	})
+}
+
+func (s *Service) checkout(ctx context.Context, p Purchase, returnURL func(id string) string) (CheckoutResult, error) {
+	pricing, err := s.repo.Pricing(ctx)
+	if err != nil {
+		return CheckoutResult{}, err
+	}
+	if !s.salesOpen(pricing) {
 		return CheckoutResult{}, ErrPaymentsOff
 	}
-	purchase, err := s.repo.CreatePurchase(ctx, Purchase{
-		UserID: userID, PackageID: pkg.ID, Stars: pkg.Stars,
-		AmountMinor: pkg.AmountMinor, Currency: pkg.Currency, Provider: s.provider.Name(),
-	})
+	p.PackageID = packageID(p.Stars)
+	p.AmountMinor = int64(p.Stars) * pricing.PricePerStarMinor
+	p.Currency = pricing.Currency
+	p.Provider = s.provider.Name()
+	purchase, err := s.repo.CreatePurchase(ctx, p)
 	if err != nil {
 		return CheckoutResult{}, err
 	}
-	returnURL := s.returnBase + "/?purchase=" + purchase.ID + "#stars"
-	checkout, err := s.provider.Checkout(ctx, CheckoutRequest{Purchase: purchase, ReturnURL: returnURL})
+	checkout, err := s.provider.Checkout(ctx, CheckoutRequest{Purchase: purchase, ReturnURL: returnURL(purchase.ID)})
 	if err != nil {
 		_, _ = s.repo.SettleFailed(ctx, purchase.ID, "checkout could not be created")
-		return CheckoutResult{}, err
+		if errors.Is(err, ErrPaymentsOff) {
+			return CheckoutResult{}, err
+		}
+		return CheckoutResult{}, fmt.Errorf("%w: %v", ErrProvider, err)
 	}
 	if checkout.Reference != "" {
 		if err := s.repo.SetProviderReference(ctx, purchase.ID, checkout.Reference); err != nil {
 			return CheckoutResult{}, err
 		}
+		purchase.ProviderReference = checkout.Reference
 	}
 	return CheckoutResult{Purchase: purchase, CheckoutURL: checkout.URL}, nil
 }
 
-// Purchase returns one of the student's own purchases (for the return page).
+// Purchase returns one of the student's own purchases (for the return page),
+// asking the provider for its latest state if it is still pending.
 func (s *Service) Purchase(ctx context.Context, userID, purchaseID string) (Purchase, error) {
 	p, err := s.repo.Purchase(ctx, purchaseID)
 	if err != nil {
 		return Purchase{}, err
 	}
-	if p.UserID != userID {
+	if p.UserID == "" || p.UserID != userID {
 		return Purchase{}, ErrNotFound
 	}
-	return p, nil
+	return s.refresh(ctx, p), nil
 }
 
-func (s *Service) findPackage(id string) (Package, bool) {
-	for _, p := range s.packages {
-		if p.ID == id {
-			return p, true
-		}
+// CentrePurchase is the admin panel's view of one of its centre's purchases.
+func (s *Service) CentrePurchase(ctx context.Context, actor Actor, purchaseID string) (Purchase, error) {
+	p, err := s.repo.Purchase(ctx, purchaseID)
+	if err != nil {
+		return Purchase{}, err
 	}
-	return Package{}, false
+	if p.CentreID == "" || (!actor.platform() && actor.CentreID != p.CentreID) {
+		return Purchase{}, ErrNotFound
+	}
+	return s.refresh(ctx, p), nil
+}
+
+// refresh settles a pending purchase from the provider's own record when the
+// provider can be asked directly. The callback normally does this first; this
+// covers a slow or lost callback while the buyer waits on the return page.
+func (s *Service) refresh(ctx context.Context, p Purchase) Purchase {
+	checker, ok := s.provider.(StatusChecker)
+	if p.Status != "pending" || !ok || p.Provider != s.provider.Name() || p.ProviderReference == "" {
+		return p
+	}
+	state, err := checker.Status(ctx, p)
+	if err != nil {
+		return p
+	}
+	var settled Purchase
+	switch state {
+	case StatePaid:
+		settled, err = s.repo.SettlePaid(ctx, p.ID, p.ProviderReference)
+	case StateFailed:
+		settled, err = s.repo.SettleFailed(ctx, p.ID, "payment was not completed")
+	default:
+		return p
+	}
+	if err != nil {
+		return p
+	}
+	return settled
 }
 
 // Provider is the configured payment provider; the HTTP layer routes its
@@ -298,11 +391,16 @@ func (a Actor) platform() bool { return a.CentreID == "" }
 
 // CentreStars is a centre's balance and its recent activity.
 type CentreStars struct {
-	CentreID     string        `json:"centre_id"`
-	Balance      int32         `json:"balance"`
-	FullMockCost int32         `json:"full_mock_cost"`
-	CanGrant     bool          `json:"can_grant"`
-	Activity     []LedgerEntry `json:"activity"`
+	CentreID          string        `json:"centre_id"`
+	Balance           int32         `json:"balance"`
+	FullMockCost      int32         `json:"full_mock_cost"`
+	CanGrant          bool          `json:"can_grant"`
+	CanBuy            bool          `json:"can_buy"`
+	PricePerStarMinor int64         `json:"price_per_star_minor"`
+	Currency          string        `json:"currency"`
+	MaxStars          int32         `json:"max_stars"`
+	PaymentsAvailable bool          `json:"payments_available"`
+	Activity          []LedgerEntry `json:"activity"`
 }
 
 func (s *Service) CentreStars(ctx context.Context, actor Actor, centreID string) (CentreStars, error) {
@@ -317,7 +415,16 @@ func (s *Service) CentreStars(ctx context.Context, actor Actor, centreID string)
 	if err != nil {
 		return CentreStars{}, err
 	}
-	return CentreStars{CentreID: centreID, Balance: balance, FullMockCost: spendCost[ReasonFullMock], CanGrant: actor.platform(), Activity: activity}, nil
+	pricing, err := s.repo.Pricing(ctx)
+	if err != nil {
+		return CentreStars{}, err
+	}
+	return CentreStars{
+		CentreID: centreID, Balance: balance, FullMockCost: spendCost[ReasonFullMock],
+		CanGrant: actor.platform(), CanBuy: !actor.platform(),
+		PricePerStarMinor: pricing.PricePerStarMinor, Currency: pricing.Currency, MaxStars: MaxCentreStars,
+		PaymentsAvailable: s.salesOpen(pricing), Activity: activity,
+	}, nil
 }
 
 // GrantCentreStars tops up a centre. Until centres can pay online, this is
@@ -339,4 +446,85 @@ func (s *Service) GrantCentreStars(ctx context.Context, actor Actor, centreID st
 		return CentreStars{}, err
 	}
 	return s.CentreStars(ctx, actor, centreID)
+}
+
+// Pricing is the current price of one star.
+func (s *Service) Pricing(ctx context.Context) (Pricing, error) { return s.repo.Pricing(ctx) }
+
+// SetPricing changes the price of one star; platform administrators only.
+// Purchases already started keep the amount they were created with.
+func (s *Service) SetPricing(ctx context.Context, actor Actor, pricePerStarMinor int64) (Pricing, error) {
+	if !actor.platform() {
+		return Pricing{}, ErrForbidden
+	}
+	if pricePerStarMinor < minPriceMinor || pricePerStarMinor > maxPriceMinor || pricePerStarMinor%100 != 0 {
+		return Pricing{}, ErrInvalidPrice
+	}
+	return s.repo.SetPricing(ctx, pricePerStarMinor, actor.AdminID)
+}
+
+// StarsAdmin is the platform administrator's stars screen.
+type StarsAdmin struct {
+	Pricing           Pricing       `json:"pricing"`
+	PaymentsAvailable bool          `json:"payments_available"`
+	Provider          string        `json:"provider"`
+	Purchases         []PurchaseRow `json:"purchases"`
+}
+
+func (s *Service) StarsAdmin(ctx context.Context, actor Actor) (StarsAdmin, error) {
+	if !actor.platform() {
+		return StarsAdmin{}, ErrForbidden
+	}
+	pricing, err := s.repo.Pricing(ctx)
+	if err != nil {
+		return StarsAdmin{}, err
+	}
+	rows, err := s.repo.RecentPurchases(ctx, 50)
+	if err != nil {
+		return StarsAdmin{}, err
+	}
+	return StarsAdmin{Pricing: pricing, PaymentsAvailable: s.salesOpen(pricing), Provider: s.provider.Name(), Purchases: rows}, nil
+}
+
+// Purchases nobody has paid for within this long are closed as expired.
+const purchaseExpiry = 48 * time.Hour
+
+// Sweep settles pending purchases from the provider's records: payments whose
+// callback never arrived are credited, failed ones closed, and checkouts left
+// unpaid for 48 hours expired. It returns how many purchases changed.
+func (s *Service) Sweep(ctx context.Context, now time.Time) int {
+	pending, err := s.repo.PendingPurchases(ctx, 100)
+	if err != nil {
+		return 0
+	}
+	changed := 0
+	for _, p := range pending {
+		if ctx.Err() != nil {
+			break
+		}
+		if after := s.refresh(ctx, p); after.Status != p.Status {
+			changed++
+			continue
+		}
+		if now.Sub(p.CreatedAt) > purchaseExpiry {
+			if _, err := s.repo.SettleFailed(ctx, p.ID, "expired: no payment received"); err == nil {
+				changed++
+			}
+		}
+	}
+	return changed
+}
+
+// Run sweeps every few minutes until ctx ends.
+func (s *Service) Run(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.Sweep(ctx, time.Now())
+		}
+	}
 }
