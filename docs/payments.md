@@ -11,16 +11,24 @@ Students spend **stars** to sit full mock exams.
 | A balance can never go negative; concurrent starts cannot both take the last star | `CHECK (balance >= 0)` + `SELECT … FOR UPDATE` in `stars/postgres` |
 | Stars are credited only by the payment provider's server callback, once | `Repository.SettlePaid` |
 
+### Learning centres
+
+Students who belong to a learning centre (`users.centre_id`) do **not** have personal stars. Their centre holds one shared balance (`star_centre_wallets`) and each full mock a centre student starts takes one star from it; the ledger row records the student and the centre, so the centre can see who used what. Centre students cannot buy stars (`403 centre_managed`); when the centre is empty they get `402 centre_out_of_stars` and are told to ask their centre.
+
+Centres start at 0 stars. Until centres can pay online, a **platform administrator** adds stars in the admin panel (Centres → a centre → Stars), with an optional note such as an invoice number. A centre's own administrator sees the balance and recent activity under "Your centre" but cannot add stars. `star_purchases.centre_id` and `SettlePaid` already credit a centre, so centre checkout can be added later without schema changes.
+
 Every change is written to `star_ledger` with its reason (`welcome`, `full_mock`, `purchase`, `grant`, `refund`), so any balance can be explained.
 
 ## API
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/api/v1/stars` | `{balance, full_mock_cost, packages, payments_available}` |
+| GET | `/api/v1/stars` | `{source: "personal"\|"centre", centre_name, balance, full_mock_cost, packages, payments_available}` |
 | POST | `/api/v1/stars/spend` | `{purpose: "full_mock", reference}` → `{balance}`; **402** `insufficient_stars` when empty |
 | POST | `/api/v1/stars/purchases` | `{package_id}` → `{purchase, checkout_url}`; **503** `payments_unavailable` while sales are closed |
 | GET | `/api/v1/stars/purchases/{id}` | the student's own purchase, for the after-payment page |
+| GET | `/api/v1/admin/centres/{centre_id}/stars` | admin session; balance + last 50 changes; a centre admin only for their own centre |
+| POST | `/api/v1/admin/centres/{centre_id}/stars/grants` | admin session, platform admins only; `{stars, reference, note}`; a repeated reference counts once |
 | POST | `/api/v1/payments/{provider}/callback` | provider → server; no student session; only the configured provider answers |
 
 After paying, the provider sends the student to `<WEB_ORIGIN>/?purchase=<id>#stars`. The page polls the purchase until the callback has settled it.

@@ -9,15 +9,18 @@ import (
 )
 
 type fakeRepo struct {
-	balance   int32
-	spent     map[string]bool
-	purchases map[string]Purchase
-	failed    []string
-	ref       string
+	centre        *Centre
+	centreBalance int32
+	granted       map[string]bool
+	balance       int32
+	spent         map[string]bool
+	purchases     map[string]Purchase
+	failed        []string
+	ref           string
 }
 
 func newFakeRepo(balance int32) *fakeRepo {
-	return &fakeRepo{balance: balance, spent: map[string]bool{}, purchases: map[string]Purchase{}}
+	return &fakeRepo{balance: balance, spent: map[string]bool{}, purchases: map[string]Purchase{}, granted: map[string]bool{}}
 }
 func (f *fakeRepo) EnsureWallet(context.Context, string, int32) (int32, error) { return f.balance, nil }
 func (f *fakeRepo) Spend(_ context.Context, _, reason, ref string, cost int32) (int32, error) {
@@ -53,6 +56,37 @@ func (f *fakeRepo) SettlePaid(context.Context, string, string) (Purchase, error)
 func (f *fakeRepo) SettleFailed(_ context.Context, id, _ string) (Purchase, error) {
 	f.failed = append(f.failed, id)
 	return Purchase{}, nil
+}
+
+func (f *fakeRepo) StudentCentre(context.Context, string) (Centre, bool, error) {
+	if f.centre == nil {
+		return Centre{}, false, nil
+	}
+	return *f.centre, true, nil
+}
+func (f *fakeRepo) EnsureCentreWallet(context.Context, string) (int32, error) {
+	return f.centreBalance, nil
+}
+func (f *fakeRepo) SpendFromCentre(_ context.Context, _, user, reason, ref string, cost int32) (int32, error) {
+	if f.spent[user+reason+ref] {
+		return f.centreBalance, nil
+	}
+	if f.centreBalance < cost {
+		return f.centreBalance, ErrCentreInsufficient
+	}
+	f.centreBalance -= cost
+	f.spent[user+reason+ref] = true
+	return f.centreBalance, nil
+}
+func (f *fakeRepo) GrantCentre(_ context.Context, _, _ string, stars int32, ref, _ string) (int32, error) {
+	if !f.granted[ref] {
+		f.granted[ref] = true
+		f.centreBalance += stars
+	}
+	return f.centreBalance, nil
+}
+func (f *fakeRepo) CentreActivity(context.Context, string, int) ([]LedgerEntry, error) {
+	return []LedgerEntry{}, nil
 }
 
 type fakeProvider struct {
@@ -147,5 +181,67 @@ func TestStudentsSeeOnlyTheirOwnPurchases(t *testing.T) {
 	}
 	if p, err := s.Purchase(context.Background(), "alice", "p1"); err != nil || p.ID != "p1" {
 		t.Fatalf("own purchase: %+v %v", p, err)
+	}
+}
+
+func centreRepo(balance int32) *fakeRepo {
+	r := newFakeRepo(1) // a personal star that must never be touched
+	r.centre = &Centre{ID: "c1", Name: "Cambridge Centre"}
+	r.centreBalance = balance
+	return r
+}
+
+func TestCentreStudentsSpendTheCentresStars(t *testing.T) {
+	repo := centreRepo(2)
+	s := New(repo, &fakeProvider{}, priced, 1, "https://app")
+	ctx := context.Background()
+	o, err := s.Overview(ctx, "student")
+	if err != nil || o.Source != "centre" || o.CentreName != "Cambridge Centre" || o.Balance != 2 || len(o.Packages) != 0 || o.PaymentsAvailable {
+		t.Fatalf("overview: %+v %v", o, err)
+	}
+	if w, err := s.Spend(ctx, "student", ReasonFullMock, "mock-11111111"); err != nil || w.Balance != 1 {
+		t.Fatalf("spend: %+v %v", w, err)
+	}
+	if repo.balance != 1 {
+		t.Fatalf("personal balance changed to %d", repo.balance)
+	}
+	if _, err := s.StartPurchase(ctx, "student", "stars-5"); !errors.Is(err, ErrCentreManaged) {
+		t.Fatalf("centre student buying: %v", err)
+	}
+}
+
+func TestEmptyCentreTellsTheStudentToAskTheCentre(t *testing.T) {
+	s := New(centreRepo(0), nil, priced, 1, "https://app")
+	if _, err := s.Spend(context.Background(), "student", ReasonFullMock, "mock-22222222"); !errors.Is(err, ErrCentreInsufficient) {
+		t.Fatalf("empty centre: %v", err)
+	}
+}
+
+func TestOnlyPlatformAdminsGrantAndCentreAdminsSeeTheirOwn(t *testing.T) {
+	repo := centreRepo(0)
+	s := New(repo, nil, priced, 1, "https://app")
+	ctx := context.Background()
+	platform, own, other := Actor{AdminID: "p"}, Actor{AdminID: "a", CentreID: "c1"}, Actor{AdminID: "b", CentreID: "c2"}
+
+	if _, err := s.CentreStars(ctx, other, "c1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("another centre's admin: %v", err)
+	}
+	if v, err := s.CentreStars(ctx, own, "c1"); err != nil || v.CanGrant {
+		t.Fatalf("own centre: %+v %v", v, err)
+	}
+	if _, err := s.GrantCentreStars(ctx, own, "c1", 10, "grant-12345678", ""); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("centre admin granting: %v", err)
+	}
+	for _, bad := range []int32{0, -5, 10001} {
+		if _, err := s.GrantCentreStars(ctx, platform, "c1", bad, "grant-12345678", ""); !errors.Is(err, ErrInvalidGrant) {
+			t.Fatalf("grant %d: %v", bad, err)
+		}
+	}
+	v, err := s.GrantCentreStars(ctx, platform, "c1", 30, "grant-12345678", "Invoice 17")
+	if err != nil || v.Balance != 30 || !v.CanGrant {
+		t.Fatalf("grant: %+v %v", v, err)
+	}
+	if v, _ := s.GrantCentreStars(ctx, platform, "c1", 30, "grant-12345678", "Invoice 17"); v.Balance != 30 {
+		t.Fatalf("repeated grant changed balance to %d", v.Balance)
 	}
 }

@@ -6,6 +6,11 @@
 //	POST /api/v1/stars/purchases           {package_id} → checkout_url (503 while payments are off)
 //	GET  /api/v1/stars/purchases/{id}      one purchase, for the after-payment page
 //	POST /api/v1/payments/{provider}/callback   provider → server, no student session
+//
+// Admin panel (admin session):
+//
+//	GET  /api/v1/admin/centres/{centre_id}/stars          balance + recent activity
+//	POST /api/v1/admin/centres/{centre_id}/stars/grants   {stars, reference, note}, platform admins only
 package httpapi
 
 import (
@@ -14,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 
+	adminhttp "github.com/own/mock-ai/apps/api/internal/admin/httpapi"
 	identity "github.com/own/mock-ai/apps/api/internal/identity/httpapi"
 	app "github.com/own/mock-ai/apps/api/internal/stars/application"
 )
@@ -21,11 +27,12 @@ import (
 type Handler struct {
 	s      *app.Service
 	auth   *identity.Handler
+	admin  *adminhttp.Handler
 	origin string
 }
 
-func New(s *app.Service, auth *identity.Handler, origin string) *Handler {
-	return &Handler{s, auth, strings.TrimRight(origin, "/")}
+func New(s *app.Service, auth *identity.Handler, admin *adminhttp.Handler, origin string) *Handler {
+	return &Handler{s, auth, admin, strings.TrimRight(origin, "/")}
 }
 
 func reply(w http.ResponseWriter, status int, v any) {
@@ -42,6 +49,14 @@ func fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, app.ErrInsufficient):
 		status, code = http.StatusPaymentRequired, "insufficient_stars"
+	case errors.Is(err, app.ErrCentreInsufficient):
+		status, code = http.StatusPaymentRequired, "centre_out_of_stars"
+	case errors.Is(err, app.ErrCentreManaged):
+		status, code = http.StatusForbidden, "centre_managed"
+	case errors.Is(err, app.ErrForbidden):
+		status, code = http.StatusForbidden, "forbidden"
+	case errors.Is(err, app.ErrInvalidGrant):
+		status, code = http.StatusUnprocessableEntity, "invalid"
 	case errors.Is(err, app.ErrPaymentsOff):
 		status, code = http.StatusServiceUnavailable, "payments_unavailable"
 	case errors.Is(err, app.ErrNotFound):
@@ -116,6 +131,40 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		reply(w, 200, map[string]any{"purchase": v})
+	})
+
+	admin := func(pattern string, fn func(w http.ResponseWriter, r *http.Request, actor app.Actor)) {
+		mux.Handle(pattern, h.admin.RequireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a := adminhttp.AdminFromContext(r.Context())
+			fn(w, r, app.Actor{AdminID: a.ID, CentreID: a.CentreID})
+		})))
+	}
+
+	admin("GET /api/v1/admin/centres/{centre_id}/stars", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		v, err := h.s.CentreStars(r.Context(), actor, r.PathValue("centre_id"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 200, v)
+	})
+
+	admin("POST /api/v1/admin/centres/{centre_id}/stars/grants", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		var in struct {
+			Stars     int32  `json:"stars"`
+			Reference string `json:"reference"`
+			Note      string `json:"note"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
+			fail(w, app.ErrInvalidGrant)
+			return
+		}
+		v, err := h.s.GrantCentreStars(r.Context(), actor, r.PathValue("centre_id"), in.Stars, in.Reference, strings.TrimSpace(in.Note))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 201, v)
 	})
 
 	// Server-to-server: authenticated by the provider's own signature, which

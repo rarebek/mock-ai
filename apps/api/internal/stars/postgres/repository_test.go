@@ -158,3 +158,107 @@ func TestPaymentConfirmedAfterFailureStillCredits(t *testing.T) {
 		t.Fatalf("status %q after late failure, want paid", got.Status)
 	}
 }
+
+func newCentre(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	n := time.Now().UnixNano()
+	var id string
+	if err := pool.QueryRow(context.Background(), `INSERT INTO centres (slug, name, join_code) VALUES ($1, $2, $3) RETURNING id`,
+		fmt.Sprintf("stars-test-%d", n), "Stars Test Centre", fmt.Sprintf("join-code-stars-%d", n)).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM centres WHERE id = $1`, id) })
+	return id
+}
+
+func TestCentreStudentSpendsTheCentresStarAndIsRecorded(t *testing.T) {
+	pool, repo := setup(t)
+	ctx := context.Background()
+	centre, student := newCentre(t, pool), newUser(t, pool)
+	if _, err := pool.Exec(ctx, `UPDATE users SET centre_id = $1 WHERE id = $2`, centre, student); err != nil {
+		t.Fatal(err)
+	}
+	if c, ok, err := repo.StudentCentre(ctx, student); err != nil || !ok || c.ID != centre {
+		t.Fatalf("student centre: %+v %v %v", c, ok, err)
+	}
+	if b, err := repo.EnsureCentreWallet(ctx, centre); err != nil || b != 0 {
+		t.Fatalf("new centre wallet: %d %v", b, err)
+	}
+	if _, err := repo.SpendFromCentre(ctx, centre, student, app.ReasonFullMock, "mock-cccccccc", 1); !errors.Is(err, app.ErrCentreInsufficient) {
+		t.Fatalf("empty centre: %v", err)
+	}
+	for i := 0; i < 2; i++ { // a repeated grant (double click, retry) counts once
+		if b, err := repo.GrantCentre(ctx, centre, "", 3, "grant-aaaaaaaa", "Invoice 17"); err != nil || b != 3 {
+			t.Fatalf("grant %d: %d %v", i, b, err)
+		}
+	}
+	if b, err := repo.SpendFromCentre(ctx, centre, student, app.ReasonFullMock, "mock-cccccccc", 1); err != nil || b != 2 {
+		t.Fatalf("spend: %d %v", b, err)
+	}
+	if b, err := repo.SpendFromCentre(ctx, centre, student, app.ReasonFullMock, "mock-cccccccc", 1); err != nil || b != 2 {
+		t.Fatalf("repeat spend charged again: %d %v", b, err)
+	}
+	activity, err := repo.CentreActivity(ctx, centre, 10)
+	if err != nil || len(activity) != 2 || activity[0].Reason != app.ReasonFullMock || activity[0].StudentName == "" || activity[1].Note != "Invoice 17" {
+		t.Fatalf("activity: %+v %v", activity, err)
+	}
+	var personal int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM star_wallets WHERE user_id = $1`, student).Scan(&personal)
+	if personal != 0 {
+		t.Fatal("a centre student's spend touched a personal wallet")
+	}
+}
+
+func TestConcurrentCentreSpendsNeverOverdraw(t *testing.T) {
+	pool, repo := setup(t)
+	ctx := context.Background()
+	centre := newCentre(t, pool)
+	_, _ = repo.EnsureCentreWallet(ctx, centre)
+	_, _ = repo.GrantCentre(ctx, centre, "", 2, "grant-bbbbbbbb", "")
+	students := make([]string, 6)
+	for i := range students {
+		students[i] = newUser(t, pool)
+		_, _ = pool.Exec(ctx, `UPDATE users SET centre_id = $1 WHERE id = $2`, centre, students[i])
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, len(students))
+	for i, s := range students {
+		wg.Add(1)
+		go func(i int, s string) {
+			defer wg.Done()
+			_, err := repo.SpendFromCentre(ctx, centre, s, app.ReasonFullMock, fmt.Sprintf("race-%08d", i), 1)
+			results <- err
+		}(i, s)
+	}
+	wg.Wait()
+	close(results)
+	ok := 0
+	for err := range results {
+		if err == nil {
+			ok++
+		}
+	}
+	if ok != 2 {
+		t.Fatalf("%d spends succeeded with two centre stars, want 2", ok)
+	}
+}
+
+func TestCentrePurchaseCreditsTheCentre(t *testing.T) {
+	pool, repo := setup(t)
+	ctx := context.Background()
+	centre := newCentre(t, pool)
+	var id string
+	if err := pool.QueryRow(ctx, `INSERT INTO star_purchases (centre_id, package_id, stars, amount_minor, currency, provider)
+		VALUES ($1, 'stars-50', 50, 100, 'UZS', 'test') RETURNING id`, centre).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := repo.SettlePaid(ctx, id, "prov-c1"); err != nil || p.Status != "paid" || p.CentreID != centre {
+		t.Fatalf("settle: %+v %v", p, err)
+	}
+	if b, _ := repo.EnsureCentreWallet(ctx, centre); b != 50 {
+		t.Fatalf("centre balance %d, want 50", b)
+	}
+	if _, err := repo.EnsureCentreWallet(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, app.ErrNotFound) {
+		t.Fatalf("unknown centre: %v", err)
+	}
+}

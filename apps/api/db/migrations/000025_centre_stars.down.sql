@@ -1,0 +1,14 @@
+ALTER TABLE star_purchases DROP CONSTRAINT IF EXISTS star_purchases_owner;
+ALTER TABLE star_purchases DROP COLUMN IF EXISTS admin_id;
+ALTER TABLE star_purchases DROP COLUMN IF EXISTS centre_id;
+DELETE FROM star_purchases WHERE user_id IS NULL;
+ALTER TABLE star_purchases ALTER COLUMN user_id SET NOT NULL;
+DROP INDEX IF EXISTS star_ledger_centre_created;
+DROP INDEX IF EXISTS star_ledger_centre_once;
+ALTER TABLE star_ledger DROP CONSTRAINT IF EXISTS star_ledger_owner;
+ALTER TABLE star_ledger DROP COLUMN IF EXISTS note;
+ALTER TABLE star_ledger DROP COLUMN IF EXISTS admin_id;
+ALTER TABLE star_ledger DROP COLUMN IF EXISTS centre_id;
+DELETE FROM star_ledger WHERE user_id IS NULL;
+ALTER TABLE star_ledger ALTER COLUMN user_id SET NOT NULL;
+DROP TABLE IF EXISTS star_centre_wallets;

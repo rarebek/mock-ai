@@ -99,7 +99,7 @@ func main() {
 		os.Exit(1)
 	}
 	starsService := starsapp.New(starspg.New(pool), paymentProvider, starsapp.DefaultPackages(), 1, cfg.WebOrigin)
-	starsHandler := starshttp.New(starsService, identityHandler, cfg.WebOrigin)
+	starsHandler := starshttp.New(starsService, identityHandler, adminHandler, cfg.WebOrigin)
 	bot, err := telegrambot.New(cfg.TelegramBotToken, cfg.TelegramMiniAppURL, cfg.WebOrigin, identityService, logger)
 	if err != nil {
 		logger.Error("initialize Telegram bot", "error", err)

@@ -21,6 +21,11 @@ var (
 	ErrInvalidRef     = errors.New("a spend needs a client reference of 8–64 letters, digits, dashes or underscores")
 	ErrNotFound       = errors.New("purchase not found")
 	ErrPaymentsOff    = errors.New("payments are coming soon; stars cannot be bought yet")
+	// A learning centre's students spend the centre's stars, not their own.
+	ErrCentreInsufficient = errors.New("your learning centre has no stars left; ask your centre to add more")
+	ErrCentreManaged      = errors.New("your learning centre provides your stars, so they cannot be bought here")
+	ErrForbidden          = errors.New("you cannot manage this centre's stars")
+	ErrInvalidGrant       = errors.New("add between 1 and 10000 stars, with a note of at most 200 characters")
 )
 
 // Reasons recorded in the ledger. They match the database CHECK constraint.
@@ -50,6 +55,7 @@ type Purchase struct {
 	Currency          string     `json:"currency"`
 	Provider          string     `json:"provider"`
 	ProviderReference string     `json:"-"`
+	CentreID          string     `json:"-"`
 	Status            string     `json:"status"`
 	FailureReason     string     `json:"failure_reason,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -72,6 +78,34 @@ type Repository interface {
 	// SettlePaid marks a pending purchase paid and credits its stars, once.
 	SettlePaid(ctx context.Context, purchaseID, providerReference string) (Purchase, error)
 	SettleFailed(ctx context.Context, purchaseID, reason string) (Purchase, error)
+
+	// StudentCentre reports the learning centre a student belongs to, if any.
+	StudentCentre(ctx context.Context, userID string) (Centre, bool, error)
+	EnsureCentreWallet(ctx context.Context, centreID string) (int32, error)
+	// SpendFromCentre takes cost stars from the centre once per (student,
+	// reason, reference) and records which student used them. Returns
+	// ErrCentreInsufficient when the centre's balance is too low.
+	SpendFromCentre(ctx context.Context, centreID, userID, reason, reference string, cost int32) (int32, error)
+	// GrantCentre adds stars to a centre once per reference.
+	GrantCentre(ctx context.Context, centreID, adminID string, stars int32, reference, note string) (int32, error)
+	CentreActivity(ctx context.Context, centreID string, limit int) ([]LedgerEntry, error)
+}
+
+// Centre is the learning centre a student belongs to.
+type Centre struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// LedgerEntry is one change to a centre's balance, for its administrators.
+type LedgerEntry struct {
+	ID           string    `json:"id"`
+	Reason       string    `json:"reason"`
+	Delta        int32     `json:"delta"`
+	BalanceAfter int32     `json:"balance_after"`
+	StudentName  string    `json:"student_name,omitempty"`
+	Note         string    `json:"note,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Service struct {
@@ -95,7 +129,12 @@ func New(repo Repository, provider Provider, packages []Package, welcome int32, 
 }
 
 // Overview is everything the stars page needs in one request.
+//
+// Source is "personal" for a self-serve student and "centre" for a learning
+// centre's student, whose balance is the centre's and who cannot buy stars.
 type Overview struct {
+	Source            string    `json:"source"`
+	CentreName        string    `json:"centre_name,omitempty"`
 	Balance           int32     `json:"balance"`
 	FullMockCost      int32     `json:"full_mock_cost"`
 	Packages          []Package `json:"packages"`
@@ -103,11 +142,23 @@ type Overview struct {
 }
 
 func (s *Service) Overview(ctx context.Context, userID string) (Overview, error) {
+	centre, inCentre, err := s.repo.StudentCentre(ctx, userID)
+	if err != nil {
+		return Overview{}, err
+	}
+	if inCentre {
+		balance, err := s.repo.EnsureCentreWallet(ctx, centre.ID)
+		if err != nil {
+			return Overview{}, err
+		}
+		return Overview{Source: "centre", CentreName: centre.Name, Balance: balance, FullMockCost: spendCost[ReasonFullMock], Packages: []Package{}}, nil
+	}
 	balance, err := s.repo.EnsureWallet(ctx, userID, s.welcome)
 	if err != nil {
 		return Overview{}, err
 	}
 	return Overview{
+		Source:            "personal",
 		Balance:           balance,
 		FullMockCost:      spendCost[ReasonFullMock],
 		Packages:          s.packages,
@@ -128,6 +179,20 @@ func (s *Service) Spend(ctx context.Context, userID, purpose, reference string) 
 	if !referencePattern.MatchString(reference) {
 		return Wallet{}, ErrInvalidRef
 	}
+	centre, inCentre, err := s.repo.StudentCentre(ctx, userID)
+	if err != nil {
+		return Wallet{}, err
+	}
+	if inCentre {
+		if _, err := s.repo.EnsureCentreWallet(ctx, centre.ID); err != nil {
+			return Wallet{}, err
+		}
+		balance, err := s.repo.SpendFromCentre(ctx, centre.ID, userID, purpose, reference, cost)
+		if err != nil {
+			return Wallet{}, err
+		}
+		return Wallet{Balance: balance}, nil
+	}
 	if _, err := s.repo.EnsureWallet(ctx, userID, s.welcome); err != nil {
 		return Wallet{}, err
 	}
@@ -147,6 +212,11 @@ type CheckoutResult struct {
 // StartPurchase records a pending purchase and asks the provider for a
 // checkout page. Stars are credited later, by the provider's callback.
 func (s *Service) StartPurchase(ctx context.Context, userID, packageID string) (CheckoutResult, error) {
+	if _, inCentre, err := s.repo.StudentCentre(ctx, userID); err != nil {
+		return CheckoutResult{}, err
+	} else if inCentre {
+		return CheckoutResult{}, ErrCentreManaged
+	}
 	pkg, ok := s.findPackage(packageID)
 	if !ok {
 		return CheckoutResult{}, ErrUnknownPackage
@@ -214,4 +284,59 @@ func (t settler) MarkPaid(ctx context.Context, purchaseID, providerReference str
 }
 func (t settler) MarkFailed(ctx context.Context, purchaseID, reason string) (Purchase, error) {
 	return t.repo.SettleFailed(ctx, purchaseID, reason)
+}
+
+// Actor is an administrator acting on a centre's stars. CentreID is empty for
+// a platform administrator, who may manage every centre; a centre's own
+// administrator may only see their centre.
+type Actor struct {
+	AdminID  string
+	CentreID string
+}
+
+func (a Actor) platform() bool { return a.CentreID == "" }
+
+// CentreStars is a centre's balance and its recent activity.
+type CentreStars struct {
+	CentreID     string        `json:"centre_id"`
+	Balance      int32         `json:"balance"`
+	FullMockCost int32         `json:"full_mock_cost"`
+	CanGrant     bool          `json:"can_grant"`
+	Activity     []LedgerEntry `json:"activity"`
+}
+
+func (s *Service) CentreStars(ctx context.Context, actor Actor, centreID string) (CentreStars, error) {
+	if !actor.platform() && actor.CentreID != centreID {
+		return CentreStars{}, ErrForbidden
+	}
+	balance, err := s.repo.EnsureCentreWallet(ctx, centreID)
+	if err != nil {
+		return CentreStars{}, err
+	}
+	activity, err := s.repo.CentreActivity(ctx, centreID, 50)
+	if err != nil {
+		return CentreStars{}, err
+	}
+	return CentreStars{CentreID: centreID, Balance: balance, FullMockCost: spendCost[ReasonFullMock], CanGrant: actor.platform(), Activity: activity}, nil
+}
+
+// GrantCentreStars tops up a centre. Until centres can pay online, this is
+// how a platform administrator records stars a centre has bought.
+func (s *Service) GrantCentreStars(ctx context.Context, actor Actor, centreID string, stars int32, reference, note string) (CentreStars, error) {
+	if !actor.platform() {
+		return CentreStars{}, ErrForbidden
+	}
+	if stars < 1 || stars > 10000 || len([]rune(note)) > 200 {
+		return CentreStars{}, ErrInvalidGrant
+	}
+	if !referencePattern.MatchString(reference) {
+		return CentreStars{}, ErrInvalidRef
+	}
+	if _, err := s.repo.EnsureCentreWallet(ctx, centreID); err != nil {
+		return CentreStars{}, err
+	}
+	if _, err := s.repo.GrantCentre(ctx, centreID, actor.AdminID, stars, reference, note); err != nil {
+		return CentreStars{}, err
+	}
+	return s.CentreStars(ctx, actor, centreID)
 }
