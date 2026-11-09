@@ -36,6 +36,7 @@ import (
 	"github.com/own/mock-ai/apps/api/internal/stars/payment"
 	starspg "github.com/own/mock-ai/apps/api/internal/stars/postgres"
 	"github.com/own/mock-ai/apps/api/internal/telegrambot"
+	"github.com/own/mock-ai/apps/api/internal/telegramlink"
 	writingapp "github.com/own/mock-ai/apps/api/internal/writing/application"
 	"github.com/own/mock-ai/apps/api/internal/writing/gemini"
 	writinghttp "github.com/own/mock-ai/apps/api/internal/writing/httpapi"
@@ -113,10 +114,13 @@ func main() {
 		logger.Error("initialize Telegram bot", "error", err)
 		os.Exit(1)
 	}
+	telegramLinks := telegramlink.New(pool)
+	bot.Links = telegramLinks
+	telegramHandler := telegramlink.NewHandler(telegramLinks, identityHandler, cfg.WebOrigin)
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpserver.New(logger, cfg.WebOrigin, identityHandler, examHandler, adminHandler, writingHandler, speakingHandler, starsHandler),
+		Handler:           httpserver.New(logger, cfg.WebOrigin, identityHandler, examHandler, adminHandler, writingHandler, speakingHandler, starsHandler, telegramHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       2 * time.Minute,
 		WriteTimeout:      2 * time.Minute,
@@ -132,6 +136,7 @@ func main() {
 	if bot != nil {
 		go bot.Run(ctx)
 		go bot.RunReminders(ctx, pool)
+		go bot.RunResults(ctx, pool)
 	} else {
 		logger.Info("Telegram bot disabled")
 	}

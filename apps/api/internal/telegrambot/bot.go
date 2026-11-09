@@ -25,7 +25,29 @@ type UserStore interface {
 	JoinCentre(ctx context.Context, userID, joinCode string) (domain.Centre, bool, error)
 }
 
+// APIError is a refusal from the Telegram Bot API. Code 403 means the bot may
+// not message this chat (the user never pressed Start or blocked the bot).
+type APIError struct {
+	Method      string
+	Code        int
+	Description string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("Telegram %s failed (%d): %s", e.Method, e.Code, e.Description)
+}
+
+// Linker connects Telegram accounts to existing mock-ai accounts
+// (see internal/telegramlink).
+type Linker interface {
+	Redeem(ctx context.Context, token string, from telegram.User, rawProfile []byte) (string, error)
+	ChatStarted(ctx context.Context, userID string) error
+}
+
 type Bot struct {
+	// Links, when set, lets /start l_<token> connect an existing account and
+	// records which students have a chat with the bot.
+	Links       Linker
 	token       string
 	miniAppURL  string
 	loginOrigin string
@@ -137,9 +159,19 @@ func (b *Bot) handle(ctx context.Context, item update) error {
 	if err != nil {
 		return fmt.Errorf("encode Telegram profile: %w", err)
 	}
+	// "Connect Telegram" from the app: attach this Telegram account to the
+	// student's existing account instead of creating a new one.
+	if token, isLink := strings.CutPrefix(startPayload(item.Message.Text), linkPayloadPrefix); isLink && b.Links != nil {
+		return b.connect(ctx, item, token, rawProfile)
+	}
 	user, created, err := b.users.EnsureTelegramUser(ctx, item.Message.From, rawProfile)
 	if err != nil {
 		return fmt.Errorf("ensure Telegram user: %w", err)
+	}
+	if b.Links != nil {
+		if err := b.Links.ChatStarted(ctx, user.ID); err != nil {
+			b.logger.Warn("record Telegram chat", "error", err)
+		}
 	}
 
 	// Per-chat configuration makes the native button appear immediately even
@@ -243,7 +275,7 @@ func (b *Bot) call(ctx context.Context, method string, payload, result any) erro
 		return fmt.Errorf("decode %s response: %w", method, err)
 	}
 	if !envelope.OK {
-		return fmt.Errorf("Telegram %s failed (%d): %s", method, envelope.ErrorCode, envelope.Description)
+		return &APIError{Method: method, Code: envelope.ErrorCode, Description: envelope.Description}
 	}
 	if result != nil && len(envelope.Result) > 0 {
 		if err := json.Unmarshal(envelope.Result, result); err != nil {
@@ -251,6 +283,34 @@ func (b *Bot) call(ctx context.Context, method string, payload, result any) erro
 		}
 	}
 	return nil
+}
+
+// linkPayloadPrefix starts a "Connect Telegram" token: /start l_<token>.
+const linkPayloadPrefix = "l_"
+
+func (b *Bot) connect(ctx context.Context, item update, token string, rawProfile []byte) error {
+	chatID := item.Message.Chat.ID
+	name, err := b.Links.Redeem(ctx, token, item.Message.From, rawProfile)
+	text := ""
+	switch {
+	case err == nil:
+		text = fmt.Sprintf("✅ Connected, %s!\n\nYour mock exam results will arrive here as soon as they are ready: Reading and Listening right after you submit, Writing and Speaking when the AI report is done.\n\nYou can switch this off in your profile in the app.", name)
+	case strings.Contains(err.Error(), "already connected"):
+		text = "This Telegram account is already connected to another mock-ai account, so it cannot be connected to this one."
+	case strings.Contains(err.Error(), "expired"):
+		text = "This link has expired or was already used. Open your profile in the app and press “Connect Telegram” again."
+	default:
+		b.logger.Warn("connect Telegram account", "error", err)
+		text = "Something went wrong connecting your account. Please try again from the app in a moment."
+	}
+	if err := b.call(ctx, "setChatMenuButton", map[string]any{"chat_id": chatID, "menu_button": b.menuButton()}, nil); err != nil {
+		b.logger.Warn("set Telegram chat menu", "error", err)
+	}
+	return b.call(ctx, "sendMessage", map[string]any{
+		"chat_id":      chatID,
+		"text":         text,
+		"reply_markup": map[string]any{"inline_keyboard": [][]any{{map[string]any{"text": "Open mock-ai", "web_app": map[string]string{"url": b.miniAppURL}}}}},
+	}, nil)
 }
 
 func isStartCommand(text string) bool {

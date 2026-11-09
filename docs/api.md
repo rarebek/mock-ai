@@ -169,3 +169,13 @@ interviews retain their original endpoints for compatibility.
 ## Stars
 
 Balance, spending and purchases: see [payments.md](payments.md).
+
+## Telegram results
+
+Students can receive their results from the Telegram bot.
+
+- `GET /api/v1/me/telegram` → `{linked, started, results_enabled}`. `started` means the student has pressed Start in the bot, so it can message them.
+- `POST /api/v1/me/telegram/link` → `{token, start, expires_at}`. The app opens `https://t.me/<bot>?start=<start>` (`l_<token>`, valid 30 minutes, single use). Pressing Start attaches that Telegram account to the student's existing account; a Telegram account already used by another mock-ai account is refused.
+- `PUT /api/v1/me/telegram/results` `{enabled}` switches result messages on or off.
+
+The bot's results worker (`internal/telegrambot/results.go`) checks every 10 seconds for results produced after the student connected — scored Reading/Listening attempts and completed Writing/Speaking reports — records each once in `telegram_deliveries`, and sends a summary with an "Open full review" button. A student who blocked the bot is marked `undeliverable`; other failures retry with backoff, up to 8 attempts.
