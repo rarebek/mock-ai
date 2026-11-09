@@ -1103,7 +1103,7 @@ func TestLearningIntegration(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, e := writingService.Submit(context.Background(), student.ID, draft.ID, 1, true)
+			_, e := writingService.Submit(context.Background(), student.ID, draft.ID, 1, true, "")
 			errs <- e
 		}()
 	}
@@ -1146,7 +1146,7 @@ func TestLearningIntegration(t *testing.T) {
 		t.Fatal("revision lost task", e)
 	}
 	request("POST", "/api/v1/writing/submissions", writingapp.Input{ParentID: draft.ID, Essay: essay}, other, 404)
-	if _, e = writingService.Submit(context.Background(), student.ID, copy.ID, 1, true); e != nil {
+	if _, e = writingService.Submit(context.Background(), student.ID, copy.ID, 1, true, ""); e != nil {
 		t.Fatal(e)
 	}
 	oldRun, e := writingService.Repo.Claim(context.Background())
@@ -1163,7 +1163,7 @@ func TestLearningIntegration(t *testing.T) {
 	if e != nil || interrupted.Status != "failed" || interrupted.ErrorCode != "interrupted" {
 		t.Fatal("interrupted job not recoverable", e)
 	}
-	if _, e = writingService.Submit(context.Background(), student.ID, copy.ID, 1, true); e != nil {
+	if _, e = writingService.Submit(context.Background(), student.ID, copy.ID, 1, true, ""); e != nil {
 		t.Fatal(e)
 	}
 	newRun, e := writingService.Repo.Claim(context.Background())
@@ -1181,7 +1181,7 @@ func TestLearningIntegration(t *testing.T) {
 		if e != nil {
 			t.Fatal(e)
 		}
-		if _, e = writingService.Submit(context.Background(), student.ID, v.ID, 1, true); e != nil {
+		if _, e = writingService.Submit(context.Background(), student.ID, v.ID, 1, true, ""); e != nil {
 			t.Fatal(e)
 		}
 	}

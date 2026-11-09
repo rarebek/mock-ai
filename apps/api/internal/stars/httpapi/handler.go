@@ -14,7 +14,7 @@
 //	POST /api/v1/admin/centres/{centre_id}/stars/purchases {stars} → checkout_url, the centre's own admin
 //	GET  /api/v1/admin/stars/purchases/{id}               a centre purchase, for the after-payment notice
 //	GET  /api/v1/admin/stars                              price, sales status, recent purchases (platform)
-//	PUT  /api/v1/admin/stars/pricing                      {price_per_star_minor} (platform)
+//	PUT  /api/v1/admin/stars/pricing                      {price_per_star_minor, writing_price_minor, speaking_price_minor} (platform)
 package httpapi
 
 import (
@@ -59,7 +59,7 @@ func fail(w http.ResponseWriter, err error) {
 		status, code = http.StatusForbidden, "centre_managed"
 	case errors.Is(err, app.ErrForbidden):
 		status, code = http.StatusForbidden, "forbidden"
-	case errors.Is(err, app.ErrInvalidGrant), errors.Is(err, app.ErrInvalidQuantity), errors.Is(err, app.ErrInvalidPrice):
+	case errors.Is(err, app.ErrInvalidGrant), errors.Is(err, app.ErrInvalidQuantity), errors.Is(err, app.ErrInvalidPrice), errors.Is(err, app.ErrInvalidKind):
 		status, code = http.StatusUnprocessableEntity, "invalid"
 	case errors.Is(err, app.ErrProvider):
 		status, code = http.StatusBadGateway, "payment_provider_error"
@@ -117,8 +117,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	student("POST /api/v1/stars/purchases", func(w http.ResponseWriter, r *http.Request, userID string) {
 		var in struct {
-			Stars     int32  `json:"stars"`
-			PackageID string `json:"package_id"`
+			Kind      app.Kind `json:"kind"`
+			Stars     int32    `json:"stars"`
+			Count     int32    `json:"count"`
+			PackageID string   `json:"package_id"`
 		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
 			fail(w, app.ErrInvalidQuantity)
@@ -130,9 +132,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 				fail(w, app.ErrUnknownPackage)
 				return
 			}
-			in.Stars = n
+			in.Stars, in.Kind = n, app.KindStar
 		}
-		v, err := h.s.StartPurchase(r.Context(), userID, in.Stars)
+		if in.Kind == "" {
+			in.Kind = app.KindStar
+		}
+		if in.Count == 0 {
+			in.Count = in.Stars
+		}
+		v, err := h.s.StartPurchase(r.Context(), userID, in.Kind, in.Count)
 		if err != nil {
 			fail(w, err)
 			return
@@ -167,15 +175,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	admin("POST /api/v1/admin/centres/{centre_id}/stars/grants", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
 		var in struct {
-			Stars     int32  `json:"stars"`
-			Reference string `json:"reference"`
-			Note      string `json:"note"`
+			Kind      app.Kind `json:"kind"`
+			Stars     int32    `json:"stars"`
+			Reference string   `json:"reference"`
+			Note      string   `json:"note"`
 		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
 			fail(w, app.ErrInvalidGrant)
 			return
 		}
-		v, err := h.s.GrantCentreStars(r.Context(), actor, r.PathValue("centre_id"), in.Stars, in.Reference, strings.TrimSpace(in.Note))
+		if in.Kind == "" {
+			in.Kind = app.KindStar
+		}
+		v, err := h.s.GrantCentreStars(r.Context(), actor, r.PathValue("centre_id"), in.Kind, in.Stars, in.Reference, strings.TrimSpace(in.Note))
 		if err != nil {
 			fail(w, err)
 			return
@@ -185,13 +197,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	admin("POST /api/v1/admin/centres/{centre_id}/stars/purchases", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
 		var in struct {
-			Stars int32 `json:"stars"`
+			Kind  app.Kind `json:"kind"`
+			Stars int32    `json:"stars"`
 		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
 			fail(w, app.ErrInvalidQuantity)
 			return
 		}
-		v, err := h.s.StartCentrePurchase(r.Context(), actor, r.PathValue("centre_id"), in.Stars)
+		if in.Kind == "" {
+			in.Kind = app.KindStar
+		}
+		v, err := h.s.StartCentrePurchase(r.Context(), actor, r.PathValue("centre_id"), in.Kind, in.Stars)
 		if err != nil {
 			fail(w, err)
 			return
@@ -218,14 +234,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	})
 
 	admin("PUT /api/v1/admin/stars/pricing", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
-		var in struct {
-			PricePerStarMinor int64 `json:"price_per_star_minor"`
-		}
+		var in app.Pricing
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
 			fail(w, app.ErrInvalidPrice)
 			return
 		}
-		v, err := h.s.SetPricing(r.Context(), actor, in.PricePerStarMinor)
+		v, err := h.s.SetPricing(r.Context(), actor, in)
 		if err != nil {
 			fail(w, err)
 			return

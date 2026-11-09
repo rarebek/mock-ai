@@ -1,6 +1,14 @@
-# Stars and payments
+# Stars, practice credits and payments
 
-Students spend **stars** to sit full mock exams.
+Students pay with three balances:
+
+| Balance | Pays for | Default price |
+| --- | --- | --- |
+| **Stars** | one full four-skill mock each | 30 000 so'm |
+| **Writing checks** | one AI-evaluated essay in Practice | 10 000 so'm |
+| **Speaking interviews** | one AI-assessed interview (live or recorded) in Practice | 10 000 so'm |
+
+Every account starts with one of each. Reading and Listening practice are free.
 
 | Rule | Where it lives |
 | --- | --- |
@@ -11,9 +19,18 @@ Students spend **stars** to sit full mock exams.
 | A balance can never go negative; concurrent starts cannot both take the last star | `CHECK (balance >= 0)` + `SELECT … FOR UPDATE` in `stars/postgres` |
 | Stars are credited only by the payment provider's server callback, once | `Repository.SettlePaid` |
 
+### Practice credits (AI Writing and Speaking)
+
+Writing evaluation (`POST /api/v1/writing/submissions/{id}/evaluate`) and Speaking interviews (`POST /api/v1/speaking/sessions`, `POST /api/v1/speaking/live/sessions`) call the AI, so the server charges for them through `credits.Charger` (`internal/platform/credits`, implemented by the stars service):
+
+- **Writing**: one Writing check per essay (`writing:<submission id>`), so re-evaluating the same essay after a failure is free. Nothing is charged when the student's centre has AI marking off (a teacher marks it).
+- **Speaking**: one Speaking interview per interview (`speaking:<session id>`). If it cannot be paid for, the just-created interview is deleted.
+- **Inside a paid full mock** the client sends `full_mock: <mock id>`. The mock id is the reference its star was spent with; if that star was spent by this student within 48 hours, the mock covers up to 2 Writing evaluations (Task 1 and 2) and 2 Speaking interviews (one restart) at no charge (`star_mock_usage`). Beyond that, or for an unpaid id, practice credits are used.
+- With none left the API answers **402** `{error: {code: "no_practice_credits", kind, message}}` and the app offers the Stars page.
+
 ### Learning centres
 
-Students who belong to a learning centre (`users.centre_id`) do **not** have personal stars. Their centre holds one shared balance (`star_centre_wallets`) and each full mock a centre student starts takes one star from it; the ledger row records the student and the centre, so the centre can see who used what. Centre students cannot buy stars (`403 centre_managed`); when the centre is empty they get `402 centre_out_of_stars` and are told to ask their centre.
+Students who belong to a learning centre (`users.centre_id`) do **not** use personal balances. Their centre holds shared balances of all three kinds (`star_centre_wallets`): each full mock a centre student starts takes one of the centre's stars, and each AI essay or interview in Practice takes one of the centre's Writing checks or Speaking interviews; the ledger row records the student and the centre, so the centre can see who used what. Centre students cannot buy stars (`403 centre_managed`); when the centre is empty they get `402 centre_out_of_stars` and are told to ask their centre.
 
 Centres start at 0 stars. A centre's administrator buys stars online under "Your centre" (when sales are open), and a **platform administrator** can also add stars in the admin panel (Centres → a centre → Stars), with an optional note such as an invoice number. A centre's own administrator sees the balance and recent activity under "Your centre" but cannot add stars. `star_purchases.centre_id` and `SettlePaid` already credit a centre, so centre checkout can be added later without schema changes.
 

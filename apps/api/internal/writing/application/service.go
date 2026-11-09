@@ -2,8 +2,10 @@ package application
 
 import (
 	"context"
+
 	"encoding/json"
 	"errors"
+	"github.com/own/mock-ai/apps/api/internal/platform/credits"
 	"strings"
 	"time"
 )
@@ -67,9 +69,14 @@ type Service struct {
 	Repo      Repository
 	Evaluator Evaluator
 	Model     string
+	// Credits pays for each AI evaluation: one Writing check per essay, or
+	// the full mock's own allowance. Nil means evaluations are not charged.
+	Credits credits.Charger
 }
 
-func New(r Repository, e Evaluator, model string) *Service { return &Service{r, e, model} }
+func New(r Repository, e Evaluator, model string) *Service {
+	return &Service{Repo: r, Evaluator: e, Model: model}
+}
 func validDraft(i Input) bool {
 	return len(i.Prompt) <= 4000 && len(i.Essay) <= 20000 && len(strings.Fields(i.Essay)) <= 1800
 }
@@ -95,7 +102,11 @@ func (s *Service) Save(ctx context.Context, u, id string, i Input) (Submission, 
 	}
 	return s.Repo.Save(ctx, u, id, i)
 }
-func (s *Service) Submit(ctx context.Context, u, id string, revision int32, consent bool) (Submission, error) {
+
+// Submit queues an essay for marking. fullMock is the id of the paid full
+// mock it belongs to, if any; otherwise an AI evaluation takes one Writing
+// check (once per essay, so retrying after a failure is free).
+func (s *Service) Submit(ctx context.Context, u, id string, revision int32, consent bool, fullMock string) (Submission, error) {
 	if !consent {
 		return Submission{}, errors.New("consent to process this essay and prompt for evaluation is required")
 	}
@@ -130,6 +141,11 @@ func (s *Service) Submit(ctx context.Context, u, id string, revision int32, cons
 		}
 		if !ready {
 			return v, ErrUnavailable
+		}
+		if s.Credits != nil {
+			if e := s.Credits.Charge(ctx, u, credits.Writing, "writing:"+id, fullMock); e != nil {
+				return v, e
+			}
 		}
 	}
 	return s.Repo.Queue(ctx, u, id, revision, s.Model)

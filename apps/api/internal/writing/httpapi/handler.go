@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	identity "github.com/own/mock-ai/apps/api/internal/identity/httpapi"
+	"github.com/own/mock-ai/apps/api/internal/platform/credits"
 	app "github.com/own/mock-ai/apps/api/internal/writing/application"
 	"net/http"
 	"strings"
@@ -67,6 +68,9 @@ func fail(w http.ResponseWriter, e error) {
 		code = 429
 	case errors.Is(e, app.ErrUnavailable):
 		code = 503
+	case errors.Is(e, credits.ErrNoCredits):
+		reply(w, http.StatusPaymentRequired, map[string]any{"error": map[string]string{"code": "no_practice_credits", "kind": "writing", "message": credits.Message(e)}})
+		return
 	}
 	if code != 500 {
 		message = e.Error()
@@ -152,8 +156,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	})
 	handle("POST /api/v1/writing/submissions/{id}/evaluate", func(w http.ResponseWriter, r *http.Request) {
 		var i struct {
-			Revision int32 `json:"revision"`
-			Consent  bool  `json:"consent"`
+			Revision int32  `json:"revision"`
+			Consent  bool   `json:"consent"`
+			FullMock string `json:"full_mock"`
 		}
 		if !decode(w, r, &i) {
 			return
@@ -163,7 +168,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			return
 		}
 		u, _ := identity.UserFromContext(r.Context())
-		v, e := h.s.Submit(r.Context(), u.ID, r.PathValue("id"), i.Revision, i.Consent)
+		v, e := h.s.Submit(r.Context(), u.ID, r.PathValue("id"), i.Revision, i.Consent, i.FullMock)
 		if e != nil {
 			fail(w, e)
 			return

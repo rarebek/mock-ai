@@ -27,9 +27,10 @@ func (h *Handler) registerLive(mux *http.ServeMux) {
 	}
 	mux.Handle("POST /api/v1/speaking/live/sessions", protect(func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
-			Consent bool   `json:"consent"`
-			PlanID  string `json:"plan_id"`
-			Part    int32  `json:"part"`
+			Consent  bool   `json:"consent"`
+			PlanID   string `json:"plan_id"`
+			Part     int32  `json:"part"`
+			FullMock string `json:"full_mock"`
 		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1000)).Decode(&input) != nil {
 			fail(w, d.ErrInvalid)
@@ -74,6 +75,11 @@ func (h *Handler) registerLive(mux *http.ServeMux) {
 		}
 		v, e := h.Live.Repo.CreateLive(r.Context(), u.ID, h.s.Model, h.Live.Model, ex, topic, turns)
 		if e != nil {
+			fail(w, e)
+			return
+		}
+		// The live examiner is always the AI, so it is always paid for.
+		if e := h.s.Charge(r.Context(), u.ID, v.ID, input.FullMock); e != nil {
 			fail(w, e)
 			return
 		}

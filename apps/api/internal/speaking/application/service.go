@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"github.com/own/mock-ai/apps/api/internal/platform/credits"
 	d "github.com/own/mock-ai/apps/api/internal/speaking/domain"
 	"log/slog"
 	"time"
@@ -35,9 +36,15 @@ type Service struct {
 	Provider Provider
 	Model    string
 	Log      *slog.Logger
+	// Credits pays for each AI-assessed interview: one Speaking interview, or
+	// the full mock's own allowance. Nil means interviews are not charged.
+	Credits credits.Charger
 }
 
-func (s *Service) Create(ctx context.Context, u string, consent bool, planID string, part int32) (d.Session, error) {
+// Create starts a recorded interview. fullMock is the id of the paid full mock
+// it belongs to, if any; otherwise an AI-assessed interview takes one
+// Speaking interview credit.
+func (s *Service) Create(ctx context.Context, u string, consent bool, planID string, part int32, fullMock string) (d.Session, error) {
 	if !consent {
 		return d.Session{}, d.ErrConsent
 	}
@@ -69,7 +76,24 @@ func (s *Service) Create(ctx context.Context, u string, consent bool, planID str
 	if e != nil {
 		return d.Session{}, e
 	}
-	return s.Repo.Create(ctx, u, s.Model, ex, topic, turns)
+	session, e := s.Repo.Create(ctx, u, s.Model, ex, topic, turns)
+	if e != nil || !ai {
+		return session, e
+	}
+	return session, s.Charge(ctx, u, session.ID, fullMock)
+}
+
+// Charge pays for an AI-assessed interview that was just created. If it
+// cannot be paid for, the interview is removed so it cannot be used.
+func (s *Service) Charge(ctx context.Context, u, sessionID, fullMock string) error {
+	if s.Credits == nil {
+		return nil
+	}
+	if e := s.Credits.Charge(ctx, u, credits.Speaking, "speaking:"+sessionID, fullMock); e != nil {
+		_ = s.Repo.Delete(ctx, u, sessionID)
+		return e
+	}
+	return nil
 }
 func (s *Service) Run(ctx context.Context) {
 	if s.Provider != nil {

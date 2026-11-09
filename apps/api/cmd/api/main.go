@@ -104,6 +104,10 @@ func main() {
 	}
 	starsService := starsapp.New(starspg.New(pool), paymentProvider, 1, cfg.WebOrigin, cfg.AdminOrigin)
 	starsHandler := starshttp.New(starsService, identityHandler, adminHandler, cfg.WebOrigin)
+	// Practice Writing evaluations and Speaking interviews are paid for with
+	// practice credits (or a paid full mock's allowance).
+	writingService.Credits = starsService
+	speakingService.Credits = starsService
 	bot, err := telegrambot.New(cfg.TelegramBotToken, cfg.TelegramMiniAppURL, cfg.WebOrigin, identityService, logger)
 	if err != nil {
 		logger.Error("initialize Telegram bot", "error", err)

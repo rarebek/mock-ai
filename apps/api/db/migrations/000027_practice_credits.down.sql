@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS star_mock_usage;
+ALTER TABLE star_settings DROP COLUMN IF EXISTS speaking_price_minor, DROP COLUMN IF EXISTS writing_price_minor;
+DELETE FROM star_purchases WHERE kind <> 'star';
+ALTER TABLE star_purchases DROP COLUMN IF EXISTS kind;
+DELETE FROM star_ledger WHERE kind <> 'star';
+ALTER TABLE star_ledger DROP CONSTRAINT IF EXISTS star_ledger_reason_check;
+ALTER TABLE star_ledger ADD CONSTRAINT star_ledger_reason_check CHECK (reason IN ('welcome', 'full_mock', 'purchase', 'grant', 'refund'));
+ALTER TABLE star_ledger DROP COLUMN IF EXISTS kind;
+ALTER TABLE star_centre_wallets DROP COLUMN IF EXISTS speaking_balance, DROP COLUMN IF EXISTS writing_balance;
+ALTER TABLE star_wallets DROP COLUMN IF EXISTS speaking_balance, DROP COLUMN IF EXISTS writing_balance;

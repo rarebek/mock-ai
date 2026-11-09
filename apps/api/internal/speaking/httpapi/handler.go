@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	identity "github.com/own/mock-ai/apps/api/internal/identity/httpapi"
+	"github.com/own/mock-ai/apps/api/internal/platform/credits"
 	app "github.com/own/mock-ai/apps/api/internal/speaking/application"
 	d "github.com/own/mock-ai/apps/api/internal/speaking/domain"
 	"github.com/own/mock-ai/apps/api/internal/speaking/live"
@@ -73,6 +74,9 @@ func fail(w http.ResponseWriter, e error) {
 		code = 429
 	case errors.Is(e, d.ErrUnavailable):
 		code = 503
+	case errors.Is(e, credits.ErrNoCredits):
+		reply(w, http.StatusPaymentRequired, map[string]any{"error": map[string]string{"code": "no_practice_credits", "kind": "speaking", "message": credits.Message(e)}})
+		return
 	}
 	if code != 500 {
 		message = e.Error()
@@ -125,16 +129,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	})
 	handle("POST /api/v1/speaking/sessions", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
-			Consent bool   `json:"consent"`
-			PlanID  string `json:"plan_id"`
-			Part    int32  `json:"part"`
+			Consent  bool   `json:"consent"`
+			PlanID   string `json:"plan_id"`
+			Part     int32  `json:"part"`
+			FullMock string `json:"full_mock"`
 		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1000)).Decode(&input) != nil {
 			fail(w, d.ErrInvalid)
 			return
 		}
 		u, _ := identity.UserFromContext(r.Context())
-		v, e := h.s.Create(r.Context(), u.ID, input.Consent, input.PlanID, input.Part)
+		v, e := h.s.Create(r.Context(), u.ID, input.Consent, input.PlanID, input.Part, input.FullMock)
 		if e != nil {
 			fail(w, e)
 			return
