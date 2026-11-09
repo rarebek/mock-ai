@@ -149,7 +149,7 @@ func (p *Provider) Checkout(ctx context.Context, req app.CheckoutRequest) (app.C
 	body := map[string]any{
 		"amount":      pur.AmountMinor / 100,
 		"currency":    "UZS",
-		"description": description(pur.Stars),
+		"description": description(pur.Kind, pur.Stars),
 		"return_url":  req.ReturnURL,
 		"metadata":    map[string]string{"purchase_id": pur.ID, "stars": strconv.Itoa(int(pur.Stars))},
 	}
@@ -167,11 +167,23 @@ func (p *Provider) Checkout(ctx context.Context, req app.CheckoutRequest) (app.C
 	return app.Checkout{URL: out.CheckoutURL, Reference: out.ID}, nil
 }
 
-func description(stars int32) string {
-	if stars == 1 {
+func description(kind app.Kind, n int32) string {
+	switch kind {
+	case app.KindWriting:
+		if n == 1 {
+			return "Mock AI: 1 Writing check (one AI-evaluated essay)"
+		}
+		return fmt.Sprintf("Mock AI: %d Writing checks (%d AI-evaluated essays)", n, n)
+	case app.KindSpeaking:
+		if n == 1 {
+			return "Mock AI: 1 Speaking interview (one AI-assessed interview)"
+		}
+		return fmt.Sprintf("Mock AI: %d Speaking interviews (%d AI-assessed interviews)", n, n)
+	}
+	if n == 1 {
 		return "Mock AI: 1 star (one full IELTS mock)"
 	}
-	return fmt.Sprintf("Mock AI: %d stars (%d full IELTS mocks)", stars, stars)
+	return fmt.Sprintf("Mock AI: %d stars (%d full IELTS mocks)", n, n)
 }
 
 func (p *Provider) fetch(ctx context.Context, paymentID string) (payment, error) {

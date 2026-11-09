@@ -203,3 +203,20 @@ func TestUnrelatedEventsAreAcknowledged(t *testing.T) {
 		t.Fatalf("code %d paid %d", code, s.paid)
 	}
 }
+
+func TestDescriptionNamesWhatIsBought(t *testing.T) {
+	for _, c := range []struct {
+		kind app.Kind
+		n    int32
+		want string
+	}{
+		{app.KindStar, 1, "Mock AI: 1 star (one full IELTS mock)"},
+		{app.KindStar, 5, "Mock AI: 5 stars (5 full IELTS mocks)"},
+		{app.KindWriting, 1, "Mock AI: 1 Writing check (one AI-evaluated essay)"},
+		{app.KindSpeaking, 5, "Mock AI: 5 Speaking interviews (5 AI-assessed interviews)"},
+	} {
+		if got := description(c.kind, c.n); got != c.want {
+			t.Errorf("description(%s, %d) = %q, want %q", c.kind, c.n, got, c.want)
+		}
+	}
+}
