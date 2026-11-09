@@ -28,6 +28,8 @@ type Config struct {
 	SessionSecret            string
 	SessionTTL               time.Duration
 	SecureCookie             bool
+	// PaymentProvider selects how stars are sold ("" or "none" = coming soon).
+	PaymentProvider string
 }
 
 func Load() (Config, error) {
@@ -42,6 +44,7 @@ func Load() (Config, error) {
 		GeminiSpeakingVoiceModel: envOr("GEMINI_SPEAKING_VOICE_MODEL", "gemini-3.8-flash-tts"),
 		GeminiSpeakingLiveModel:  envOr("GEMINI_SPEAKING_LIVE_MODEL", "gemini-3.8-live"),
 		WebOrigin:                envOr("WEB_ORIGIN", "http://localhost:5173"),
+		PaymentProvider:          envOr("PAYMENT_PROVIDER", "none"),
 		TelegramBotToken:         os.Getenv("TELEGRAM_BOT_TOKEN"),
 		GoogleClientID:           os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret:       os.Getenv("GOOGLE_CLIENT_SECRET"),

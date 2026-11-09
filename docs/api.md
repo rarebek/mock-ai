@@ -165,3 +165,7 @@ and AI Speaking reports are available under `/api/v1/speaking`. See
 New sessions use `POST /api/v1/speaking/live/sessions` and the authenticated,
 same-origin WebSocket `/api/v1/speaking/live/sessions/{id}/stream`. Earlier recorded
 interviews retain their original endpoints for compatibility.
+
+## Stars
+
+Balance, spending and purchases: see [payments.md](payments.md).

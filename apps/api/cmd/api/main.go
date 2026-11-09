@@ -31,6 +31,10 @@ import (
 	speakinghttp "github.com/own/mock-ai/apps/api/internal/speaking/httpapi"
 	speakinglive "github.com/own/mock-ai/apps/api/internal/speaking/live"
 	speakingpg "github.com/own/mock-ai/apps/api/internal/speaking/postgres"
+	starsapp "github.com/own/mock-ai/apps/api/internal/stars/application"
+	starshttp "github.com/own/mock-ai/apps/api/internal/stars/httpapi"
+	"github.com/own/mock-ai/apps/api/internal/stars/payment"
+	starspg "github.com/own/mock-ai/apps/api/internal/stars/postgres"
 	"github.com/own/mock-ai/apps/api/internal/telegrambot"
 	writingapp "github.com/own/mock-ai/apps/api/internal/writing/application"
 	"github.com/own/mock-ai/apps/api/internal/writing/gemini"
@@ -89,6 +93,13 @@ func main() {
 	if provider, ok := speakingProvider.(speakinglive.Provider); ok {
 		speakingHandler.Live = &speakinglive.Service{Repo: speakingService.Repo.(*speakingpg.Repository), Provider: provider, Model: cfg.GeminiSpeakingLiveModel, Log: logger}
 	}
+	paymentProvider, err := payment.New(cfg.PaymentProvider)
+	if err != nil {
+		logger.Error("initialize payment provider", "error", err)
+		os.Exit(1)
+	}
+	starsService := starsapp.New(starspg.New(pool), paymentProvider, starsapp.DefaultPackages(), 1, cfg.WebOrigin)
+	starsHandler := starshttp.New(starsService, identityHandler, cfg.WebOrigin)
 	bot, err := telegrambot.New(cfg.TelegramBotToken, cfg.TelegramMiniAppURL, cfg.WebOrigin, identityService, logger)
 	if err != nil {
 		logger.Error("initialize Telegram bot", "error", err)
@@ -97,7 +108,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpserver.New(logger, cfg.WebOrigin, identityHandler, examHandler, adminHandler, writingHandler, speakingHandler),
+		Handler:           httpserver.New(logger, cfg.WebOrigin, identityHandler, examHandler, adminHandler, writingHandler, speakingHandler, starsHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       2 * time.Minute,
 		WriteTimeout:      2 * time.Minute,
