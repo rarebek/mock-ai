@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +96,15 @@ func TestLearningIntegration(t *testing.T) {
 	speakingHandler := speakinghttp.New(speakingService, authHandler, "http://localhost")
 	speakingHandler.Live = &speakinglive.Service{Repo: speakingRepo, Provider: speakingTestProvider{}, Model: "test-live"}
 	handler := httpserver.New(logger, "http://localhost", authHandler, examhttp.New(service, authHandler, logger, adminHandler), adminHandler, writinghttp.New(writingService, authHandler, "http://localhost"), speakingHandler)
+	// This one long scenario would trip the per-IP API limit (tested in
+	// httpserver), so each request comes from its own client address.
+	var clients atomic.Uint32
+	limited := handler
+	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := clients.Add(1)
+		r.RemoteAddr = fmt.Sprintf("10.%d.%d.%d:1234", byte(n>>16), byte(n>>8), byte(n))
+		limited.ServeHTTP(w, r)
+	})
 	request := func(method, path string, payload any, cookie *http.Cookie, status int) map[string]json.RawMessage {
 		t.Helper()
 		b, _ := json.Marshal(payload)
