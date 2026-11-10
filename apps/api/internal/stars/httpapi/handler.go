@@ -12,7 +12,9 @@
 //	GET  /api/v1/admin/centres/{centre_id}/stars          balance + recent activity
 //	POST /api/v1/admin/centres/{centre_id}/stars/grants   {stars, reference, note}, platform admins only
 //	POST /api/v1/admin/centres/{centre_id}/stars/purchases {stars} → checkout_url, the centre's own admin
-//	GET  /api/v1/admin/stars/purchases/{id}               a centre purchase, for the after-payment notice
+//	GET  /api/v1/admin/students/{user_id}/stars           a student's own balances (platform)
+//	POST /api/v1/admin/students/{user_id}/stars/grants    {kind, stars, reference, note} (platform)
+//	GET  /api/v1/admin/stars/purchases/{id}              a centre purchase, for the after-payment notice
 //	GET  /api/v1/admin/stars                              price, sales status, recent purchases (platform)
 //	PUT  /api/v1/admin/stars/pricing                      {price_per_star_minor, writing_price_minor, speaking_price_minor} (platform)
 package httpapi
@@ -188,6 +190,34 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 			in.Kind = app.KindStar
 		}
 		v, err := h.s.GrantCentreStars(r.Context(), actor, r.PathValue("centre_id"), in.Kind, in.Stars, in.Reference, strings.TrimSpace(in.Note))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 201, v)
+	})
+
+	admin("GET /api/v1/admin/students/{user_id}/stars", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		v, err := h.s.StudentStars(r.Context(), actor, r.PathValue("user_id"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		reply(w, 200, v)
+	})
+
+	admin("POST /api/v1/admin/students/{user_id}/stars/grants", func(w http.ResponseWriter, r *http.Request, actor app.Actor) {
+		var in struct {
+			Kind      app.Kind `json:"kind"`
+			Stars     int32    `json:"stars"`
+			Reference string   `json:"reference"`
+			Note      string   `json:"note"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in) != nil {
+			fail(w, app.ErrInvalidGrant)
+			return
+		}
+		v, err := h.s.GrantUserStars(r.Context(), actor, r.PathValue("user_id"), in.Kind, in.Stars, in.Reference, strings.TrimSpace(in.Note))
 		if err != nil {
 			fail(w, err)
 			return

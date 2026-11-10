@@ -319,6 +319,40 @@ func (r *Repository) GrantCentre(ctx context.Context, centreID, adminID string, 
 	return balance, tx.Commit(ctx)
 }
 
+// GrantUser adds count of kind to a student's own wallet once per reference.
+func (r *Repository) GrantUser(ctx context.Context, userID, adminID string, kind app.Kind, count int32, reference, note string) (int32, error) {
+	col, err := column(kind)
+	if err != nil {
+		return 0, err
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	var balance int32
+	if err := tx.QueryRow(ctx, `SELECT `+col+` FROM star_wallets WHERE user_id = $1 FOR UPDATE`, userID).Scan(&balance); err != nil {
+		return 0, err
+	}
+	var already bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM star_ledger WHERE user_id = $1 AND reason = $2 AND reference = $3)`,
+		userID, app.ReasonGrant, reference).Scan(&already); err != nil {
+		return 0, err
+	}
+	if already {
+		return balance, tx.Commit(ctx)
+	}
+	if err := tx.QueryRow(ctx, `UPDATE star_wallets SET `+col+` = `+col+` + $2, updated_at = now()
+		WHERE user_id = $1 RETURNING `+col, userID, count).Scan(&balance); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO star_ledger (user_id, admin_id, kind, delta, balance_after, reason, reference, note)
+		VALUES ($1, NULLIF($2, '')::uuid, $3, $4, $5, $6, $7, NULLIF($8, ''))`, userID, adminID, string(kind), count, balance, app.ReasonGrant, reference, note); err != nil {
+		return 0, err
+	}
+	return balance, tx.Commit(ctx)
+}
+
 func (r *Repository) CentreActivity(ctx context.Context, centreID string, limit int) ([]app.LedgerEntry, error) {
 	rows, err := r.pool.Query(ctx, `SELECT l.id, l.kind, l.reason, l.delta, l.balance_after, COALESCE(u.display_name, ''), COALESCE(l.note, ''), l.created_at
 		FROM star_ledger l LEFT JOIN users u ON u.id = l.user_id

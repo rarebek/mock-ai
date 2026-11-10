@@ -112,6 +112,13 @@ func (f *fakeRepo) GrantCentre(_ context.Context, _, _ string, k Kind, count int
 	}
 	return f.centreBal.of(k), nil
 }
+func (f *fakeRepo) GrantUser(_ context.Context, _, _ string, k Kind, count int32, ref, _ string) (int32, error) {
+	if !f.granted[ref] {
+		f.granted[ref] = true
+		take(&f.own, k, -count)
+	}
+	return f.own.of(k), nil
+}
 func (f *fakeRepo) CentreActivity(context.Context, string, int) ([]LedgerEntry, error) {
 	return []LedgerEntry{}, nil
 }
@@ -337,6 +344,29 @@ func TestOnlyPlatformAdminsGrantAndCentreAdminsSeeTheirOwn(t *testing.T) {
 	}
 	if v, _ := s.GrantCentreStars(ctx, platform, "c1", KindSpeaking, 30, "grant-12345678", "Invoice 17"); v.SpeakingBalance != 30 {
 		t.Fatalf("repeated grant changed balance to %d", v.SpeakingBalance)
+	}
+}
+
+func TestPlatformAdminAddsToAStudentsOwnWalletOnce(t *testing.T) {
+	repo := newFakeRepo(1)
+	s := New(repo, nil, 1, "https://app", "https://panel")
+	ctx := context.Background()
+	platform, centreAdmin := Actor{AdminID: "p"}, Actor{AdminID: "a", CentreID: "c1"}
+	if _, err := s.GrantUserStars(ctx, centreAdmin, "student", KindStar, 5, "grant-12345678", ""); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("centre admin granting: %v", err)
+	}
+	if _, err := s.GrantUserStars(ctx, platform, "student", KindStar, 0, "grant-12345678", ""); !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("zero grant: %v", err)
+	}
+	for i := 0; i < 2; i++ { // a double click adds once
+		v, err := s.GrantUserStars(ctx, platform, "student", KindWriting, 4, "grant-12345678", "Promo")
+		if err != nil || v.WritingBalance != 5 || v.Balance != 1 || v.CentreName != "" {
+			t.Fatalf("grant %d: %+v %v", i, v, err)
+		}
+	}
+	repo.centre = &Centre{ID: "c1", Name: "Alpha"}
+	if v, _ := s.StudentStars(ctx, platform, "student"); v.CentreName != "Alpha" || v.WritingBalance != 5 {
+		t.Fatalf("centre student: %+v", v)
 	}
 }
 

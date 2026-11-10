@@ -109,6 +109,8 @@ type Repository interface {
 	// GrantCentre adds count of kind to a centre once per reference.
 	GrantCentre(ctx context.Context, centreID, adminID string, kind Kind, count int32, reference, note string) (int32, error)
 	CentreActivity(ctx context.Context, centreID string, limit int) ([]LedgerEntry, error)
+	// GrantUser adds count of kind to a student's own wallet once per reference.
+	GrantUser(ctx context.Context, userID, adminID string, kind Kind, count int32, reference, note string) (int32, error)
 
 	Pricing(ctx context.Context) (Pricing, error)
 	SetPricing(ctx context.Context, p Pricing, adminID string) (Pricing, error)
@@ -528,6 +530,55 @@ func (s *Service) GrantCentreStars(ctx context.Context, actor Actor, centreID st
 		return CentreStars{}, err
 	}
 	return s.CentreStars(ctx, actor, centreID)
+}
+
+// StudentStars is a student's own wallet as a platform administrator sees it.
+// CentreName is set when the student's centre pays instead, so these
+// balances are used only after the student leaves it.
+type StudentStars struct {
+	Balance         int32  `json:"balance"`
+	WritingBalance  int32  `json:"writing_balance"`
+	SpeakingBalance int32  `json:"speaking_balance"`
+	CentreName      string `json:"centre_name,omitempty"`
+}
+
+func (s *Service) StudentStars(ctx context.Context, actor Actor, userID string) (StudentStars, error) {
+	if !actor.platform() {
+		return StudentStars{}, ErrForbidden
+	}
+	b, err := s.repo.EnsureWallet(ctx, userID, s.welcome)
+	if err != nil {
+		return StudentStars{}, err
+	}
+	centre, _, err := s.repo.StudentCentre(ctx, userID)
+	if err != nil {
+		return StudentStars{}, err
+	}
+	return StudentStars{Balance: b.Star, WritingBalance: b.Writing, SpeakingBalance: b.Speaking, CentreName: centre.Name}, nil
+}
+
+// GrantUserStars adds to a student's own wallet without payment; platform
+// administrators only.
+func (s *Service) GrantUserStars(ctx context.Context, actor Actor, userID string, kind Kind, count int32, reference, note string) (StudentStars, error) {
+	if !actor.platform() {
+		return StudentStars{}, ErrForbidden
+	}
+	if !validKind(kind) {
+		return StudentStars{}, ErrInvalidKind
+	}
+	if count < 1 || count > 10000 || len([]rune(note)) > 200 {
+		return StudentStars{}, ErrInvalidGrant
+	}
+	if !referencePattern.MatchString(reference) {
+		return StudentStars{}, ErrInvalidRef
+	}
+	if _, err := s.repo.EnsureWallet(ctx, userID, s.welcome); err != nil {
+		return StudentStars{}, err
+	}
+	if _, err := s.repo.GrantUser(ctx, userID, actor.AdminID, kind, count, reference, note); err != nil {
+		return StudentStars{}, err
+	}
+	return s.StudentStars(ctx, actor, userID)
 }
 
 // Pricing is the current price list.

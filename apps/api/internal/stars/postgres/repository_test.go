@@ -211,6 +211,22 @@ func TestCentreStudentSpendsTheCentresStarAndIsRecorded(t *testing.T) {
 	}
 }
 
+func TestGrantToAStudentCountsOnce(t *testing.T) {
+	pool, repo := setup(t)
+	ctx := context.Background()
+	student := newUser(t, pool)
+	_, _ = repo.EnsureWallet(ctx, student, 0)
+	for i := 0; i < 2; i++ {
+		if b, err := repo.GrantUser(ctx, student, "", app.KindSpeaking, 3, "grant-dddddddd", "Promo"); err != nil || b != 3 {
+			t.Fatalf("grant %d: %d %v", i, b, err)
+		}
+	}
+	var note string
+	if err := pool.QueryRow(ctx, `SELECT note FROM star_ledger WHERE user_id = $1 AND reason = 'grant'`, student).Scan(&note); err != nil || note != "Promo" {
+		t.Fatalf("ledger: %q %v", note, err)
+	}
+}
+
 func TestConcurrentCentreSpendsNeverOverdraw(t *testing.T) {
 	pool, repo := setup(t)
 	ctx := context.Background()
