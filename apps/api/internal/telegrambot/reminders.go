@@ -27,7 +27,7 @@ func (b *Bot) RunReminders(ctx context.Context, pool *pgxpool.Pool) {
 			// tg-time "r" shows the countdown in the student's own language, e.g. "in 3 weeks".
 			var examUnix int64
 			var examDay string
-			if pool.QueryRow(ctx, `SELECT extract(epoch FROM exam_date)::bigint, exam_date::text FROM student_profiles
+			if pool.QueryRow(ctx, `SELECT extract(epoch FROM exam_date)::bigint, to_char(exam_date, 'FMMonth FMDD') FROM student_profiles
 				WHERE user_id = $1 AND exam_date > current_date`, row.UserID).Scan(&examUnix, &examDay) == nil {
 				body += fmt.Sprintf(`<p>🗓 Your IELTS exam is <tg-time unix="%d" format="r">on %s</tg-time>.</p>`, examUnix, examDay)
 			}
