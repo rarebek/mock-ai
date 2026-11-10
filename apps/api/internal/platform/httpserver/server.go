@@ -30,7 +30,7 @@ func New(logger *slog.Logger, webOrigin string, auth *httpapi.Handler, exams *ex
 	}
 	exams.RegisterRoutes(mux)
 
-	return recoverer(logger, requestLogger(logger, cors(webOrigin, mux)))
+	return recoverer(logger, requestLogger(logger, cors(webOrigin, rateLimit(mux))))
 }
 
 func cors(origin string, next http.Handler) http.Handler {
