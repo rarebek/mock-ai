@@ -110,7 +110,7 @@ func TestResultsAreDeliveredOnceAfterConnecting(t *testing.T) {
 	if len(mine) != 1 {
 		t.Fatalf("sent %d messages, want 1: %v", len(mine), mine)
 	}
-	if text, _ := mine[0]["text"].(string); !strings.Contains(text, "Overall band <b>7.0</b>") || !strings.Contains(text, "Task 2") {
+	if text := richHTML(mine[0]); !strings.Contains(text, "<h1>Band 7.0</h1>") || !strings.Contains(text, "Task 2") {
 		t.Fatalf("text = %q", text)
 	}
 	var status string

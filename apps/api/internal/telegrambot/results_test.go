@@ -15,8 +15,8 @@ import (
 )
 
 func TestFormatExamResult(t *testing.T) {
-	got := formatExamResult(examResult{Title: "Cambridge 18 <Test 2>", Skill: "listening", Band: 7, Correct: 31, Total: 40})
-	for _, want := range []string{"🎧 <b>Listening result</b>", "Cambridge 18 &lt;Test 2&gt;", "Band <b>7.0</b>", "31 of 40 correct (78%)"} {
+	got := formatExamResult(examResult{Title: "Cambridge 18 <Test 2>", Skill: "listening", Band: 7, Correct: 31, Total: 40}, 7)
+	for _, want := range []string{"🎧 Listening result", "Cambridge 18 &lt;Test 2&gt;", "<h1>Band 7.0</h1>", "31 of 40 correct (78%)", "🎯 You reached your Band 7.0 target"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("%q missing %q", got, want)
 		}
@@ -25,11 +25,11 @@ func TestFormatExamResult(t *testing.T) {
 
 func TestFormatReportSummarisesBandsAndNextStep(t *testing.T) {
 	report := `{"overall":6.5,"criteria":[{"key":"task_response","score":6},{"key":"coherence_cohesion","score":7},{"key":"lexical_resource","score":6.5},{"key":"grammar","score":null}],"next_steps":["Give each paragraph one clear idea & example."]}`
-	got, err := formatReport("writing", "Task 2", []byte(report))
+	got, _, err := formatReport("writing", "Task 2", []byte(report), 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"✍️ <b>Writing report ready</b>", "Task 2", "Overall band <b>6.5</b>", "• Task response: 6.0", "• Coherence and cohesion: 7.0", "• Lexical resource: 6.5", "idea &amp; example", "not an official IELTS score"} {
+	for _, want := range []string{"✍️ Writing report ready", "Task 2", "<h1>Band 6.5</h1>", "<td>Task response</td><td>6.0</td>", "<td>Coherence and cohesion</td><td>7.0</td>", "<td>Lexical resource</td><td>6.5</td>", "idea &amp; example", "not an official IELTS score"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("%q missing %q", got, want)
 		}
@@ -37,7 +37,10 @@ func TestFormatReportSummarisesBandsAndNextStep(t *testing.T) {
 	if strings.Contains(got, "Grammar") {
 		t.Fatal("unscored criterion must be left out")
 	}
-	if _, err := formatReport("speaking", "", []byte(`{"criteria":[]}`)); err == nil {
+	if strings.Contains(got, "🎯") {
+		t.Fatal("a band below the target must not be celebrated")
+	}
+	if _, _, err := formatReport("speaking", "", []byte(`{"criteria":[]}`), 0); err == nil {
 		t.Fatal("a report without an overall band must not be sent")
 	}
 }
@@ -75,7 +78,7 @@ func TestStartWithALinkTokenConnectsTheAccount(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var body map[string]any
 				_ = json.NewDecoder(r.Body).Decode(&body)
-				if text, ok := body["text"].(string); ok {
+				if text := richHTML(body); text != "" {
 					texts = append(texts, text)
 				}
 				_, _ = w.Write([]byte(`{"ok":true,"result":true}`))

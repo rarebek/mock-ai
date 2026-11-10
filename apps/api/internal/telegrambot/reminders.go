@@ -2,6 +2,7 @@ package telegrambot
 
 import (
 	"context"
+	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	db "github.com/own/mock-ai/apps/api/internal/platform/postgres/sqlc"
 	"strconv"
@@ -22,7 +23,16 @@ func (b *Bot) RunReminders(ctx context.Context, pool *pgxpool.Pool) {
 			if err != nil {
 				continue
 			}
-			err = b.call(ctx, "sendMessage", map[string]any{"chat_id": chatID, "text": "Your study time is here 📚\nA short practice session is a good next step. Open your study plan to continue.\n\nYou can change or disable reminders in your profile.", "reply_markup": map[string]any{"inline_keyboard": [][]any{{map[string]any{"text": "Open my study plan", "web_app": map[string]string{"url": b.miniAppURL + "/#plan"}}}}}}, nil)
+			body := "<h3>📚 Your study time is here</h3><p>A short practice session is a good next step. Open your study plan to continue.</p>"
+			// tg-time "r" shows the countdown in the student's own language, e.g. "in 3 weeks".
+			var examUnix int64
+			var examDay string
+			if pool.QueryRow(ctx, `SELECT extract(epoch FROM exam_date)::bigint, exam_date::text FROM student_profiles
+				WHERE user_id = $1 AND exam_date > current_date`, row.UserID).Scan(&examUnix, &examDay) == nil {
+				body += fmt.Sprintf(`<p>🗓 Your IELTS exam is <tg-time unix="%d" format="r">on %s</tg-time>.</p>`, examUnix, examDay)
+			}
+			body += "<footer>You can change or disable reminders in your profile.</footer>"
+			err = b.sendRich(ctx, chatID, body, [][]any{{map[string]any{"text": "Open my study plan", "style": "primary", "web_app": map[string]string{"url": b.miniAppURL + "/#plan"}}}}, "")
 			if err != nil && ctx.Err() == nil {
 				b.logger.Warn("study reminder delivery failed", "error", err)
 			}

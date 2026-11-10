@@ -105,10 +105,14 @@ func TestHandleStartCreatesProfileAndSendsMiniAppButtons(t *testing.T) {
 			if menu["text"] != "Open" || menu["type"] != "web_app" {
 				t.Fatalf("unexpected menu button: %#v", menu)
 			}
-			if requests[1]["method"] != "sendMessage" {
+			if requests[1]["method"] != "sendRichMessage" {
 				t.Fatalf("second method = %v", requests[1]["method"])
 			}
-			text, _ := requests[1]["text"].(string)
+			// Only a first visit is celebrated with the 🎉 effect.
+			if _, hasEffect := requests[1]["message_effect_id"]; hasEffect != test.created {
+				t.Fatalf("message effect present = %v, want %v", hasEffect, test.created)
+			}
+			text := richHTML(requests[1])
 			if !strings.Contains(text, "Donik") || !strings.Contains(text, test.wantWords) {
 				t.Fatalf("unexpected greeting: %q", text)
 			}
@@ -191,7 +195,7 @@ func TestHandleStartSurvivesLoginLinkFailure(t *testing.T) {
 	bot.apiBase = server.URL
 	if err := bot.handle(context.Background(), update{Message: &message{
 		Text: "/start", Chat: chat{ID: 7, Type: "private"},
-		From: telegram.User{ID: 42, FirstName: "Donik"},
+		From: telegram.User{ID: 42, FirstName: "Donik <3"},
 	}}); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -200,7 +204,7 @@ func TestHandleStartSurvivesLoginLinkFailure(t *testing.T) {
 	if len(keyboard) != 1 {
 		t.Fatalf("keyboard rows = %d, want only the mini app row", len(keyboard))
 	}
-	if text, _ := send["text"].(string); !strings.Contains(text, "Donik") {
+	if text := richHTML(send); !strings.Contains(text, "Donik &lt;3") {
 		t.Fatalf("greeting lost: %q", text)
 	}
 }
@@ -246,10 +250,17 @@ func TestHandleStartJoinsALearningCentreFromTheInvite(t *testing.T) {
 			if store.joinedCode != test.wantCode {
 				t.Fatalf("join code = %q, want %q", store.joinedCode, test.wantCode)
 			}
-			text, _ := requests[len(requests)-1]["text"].(string)
+			text := richHTML(requests[len(requests)-1])
 			if !strings.Contains(text, test.wantWords) {
 				t.Fatalf("greeting %q does not contain %q", text, test.wantWords)
 			}
 		})
 	}
+}
+
+// richHTML is the HTML body of a sendRichMessage request.
+func richHTML(request map[string]any) string {
+	rich, _ := request["rich_message"].(map[string]any)
+	text, _ := rich["html"].(string)
+	return text
 }

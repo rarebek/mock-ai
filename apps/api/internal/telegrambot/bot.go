@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -183,9 +184,9 @@ func (b *Bot) handle(ctx context.Context, item update) error {
 		b.logger.Warn("set Telegram chat menu", "error", err)
 	}
 
-	name := strings.TrimSpace(item.Message.From.FirstName)
+	name := html.EscapeString(strings.TrimSpace(item.Message.From.FirstName))
 	if name == "" {
-		name = user.DisplayName
+		name = html.EscapeString(user.DisplayName)
 	}
 	// A centre invite attaches the student before anything else, so the first
 	// thing they see is their own centre's name rather than a generic welcome.
@@ -212,18 +213,18 @@ func (b *Bot) handle(ctx context.Context, item update) error {
 			loginURL = b.loginOrigin + "/api/v1/auth/telegram/link?token=" + url.QueryEscape(token)
 		}
 	}
-	text := fmt.Sprintf("Hello, %s! 👋\n\nWelcome back to mock-ai. Continue your IELTS practice when you're ready.", name)
+	body := fmt.Sprintf("<h2>Welcome back to mock-ai, %s 👋</h2><p>Continue your IELTS practice when you're ready.</p>", name)
+	effect := ""
 	if created {
-		text = fmt.Sprintf("Welcome to mock-ai, %s! 👋\n\nYour student profile is ready. Practice IELTS Reading, Listening, Writing and Speaking, take mock exams, and track your progress.", name)
+		effect = celebrateEffect
+		body = fmt.Sprintf(`<h2>Welcome to mock-ai, %s 👋</h2><p>Your student profile is ready.</p>
+<ul><li>📖 Reading and 🎧 Listening mock exams</li><li>✍️ Writing and 🎤 Speaking with AI feedback</li><li>📈 Your band progress in one place</li></ul>
+<footer>Your results will arrive in this chat as soon as they are ready.</footer>`, name)
 	}
 	if centre.Name != "" {
-		text = fmt.Sprintf("Welcome to %s on mock-ai, %s! 👋\n\nYou will practice with the material your centre has prepared for you.", centre.Name, name)
+		body = fmt.Sprintf("<h2>Welcome to %s on mock-ai, %s 👋</h2><p>You will practise with the material your centre has prepared for you.</p>", html.EscapeString(centre.Name), name)
 	}
-	return b.call(ctx, "sendMessage", map[string]any{
-		"chat_id":      item.Message.Chat.ID,
-		"text":         text,
-		"reply_markup": map[string]any{"inline_keyboard": b.keyboard(loginURL)},
-	}, nil)
+	return b.sendRich(ctx, item.Message.Chat.ID, body, b.keyboard(loginURL), effect)
 }
 
 // keyboard offers the mini app first, since staying inside Telegram is the
@@ -233,6 +234,7 @@ func (b *Bot) handle(ctx context.Context, item update) error {
 func (b *Bot) keyboard(loginURL string) [][]any {
 	rows := [][]any{{map[string]any{
 		"text":    "Open mock-ai",
+		"style":   "primary",
 		"web_app": map[string]string{"url": b.miniAppURL},
 	}}}
 	if loginURL != "" {
@@ -250,6 +252,24 @@ func (b *Bot) menuButton() map[string]any {
 		"text":    "Open",
 		"web_app": map[string]string{"url": b.miniAppURL},
 	}
+}
+
+// celebrateEffect is Telegram's 🎉 message effect, played once on arrival in
+// private chats: a first welcome, a connected account, a reached target.
+const celebrateEffect = "5046509860389126442"
+
+// sendRich sends body as a rich message (Bot API 10.1 HTML: headings, lists,
+// tables) with an inline keyboard and an optional message effect.
+func (b *Bot) sendRich(ctx context.Context, chatID int64, body string, keyboard [][]any, effect string) error {
+	payload := map[string]any{
+		"chat_id":      chatID,
+		"rich_message": map[string]any{"html": body, "skip_entity_detection": true},
+		"reply_markup": map[string]any{"inline_keyboard": keyboard},
+	}
+	if effect != "" {
+		payload["message_effect_id"] = effect
+	}
+	return b.call(ctx, "sendRichMessage", payload, nil)
 }
 
 func (b *Bot) call(ctx context.Context, method string, payload, result any) error {
@@ -291,26 +311,25 @@ const linkPayloadPrefix = "l_"
 func (b *Bot) connect(ctx context.Context, item update, token string, rawProfile []byte) error {
 	chatID := item.Message.Chat.ID
 	name, err := b.Links.Redeem(ctx, token, item.Message.From, rawProfile)
-	text := ""
+	body, effect := "", ""
 	switch {
 	case err == nil:
-		text = fmt.Sprintf("✅ Connected, %s!\n\nYour mock exam results will arrive here as soon as they are ready: Reading and Listening right after you submit, Writing and Speaking when the AI report is done.\n\nYou can switch this off in your profile in the app.", name)
+		effect = celebrateEffect
+		body = fmt.Sprintf(`<h2>✅ Connected, %s</h2><p>Your mock exam results will arrive here as soon as they are ready:</p>
+<ul><li>📖 Reading and 🎧 Listening right after you submit</li><li>✍️ Writing and 🎤 Speaking when the AI report is done</li></ul>
+<footer>You can switch this off in your profile in the app.</footer>`, html.EscapeString(name))
 	case strings.Contains(err.Error(), "already connected"):
-		text = "This Telegram account is already connected to another mock-ai account, so it cannot be connected to this one."
+		body = "<p>This Telegram account is already connected to another mock-ai account, so it cannot be connected to this one.</p>"
 	case strings.Contains(err.Error(), "expired"):
-		text = "This link has expired or was already used. Open your profile in the app and press “Connect Telegram” again."
+		body = "<p>This link has expired or was already used. Open your profile in the app and press <b>Connect Telegram</b> again.</p>"
 	default:
 		b.logger.Warn("connect Telegram account", "error", err)
-		text = "Something went wrong connecting your account. Please try again from the app in a moment."
+		body = "<p>Something went wrong connecting your account. Please try again from the app in a moment.</p>"
 	}
 	if err := b.call(ctx, "setChatMenuButton", map[string]any{"chat_id": chatID, "menu_button": b.menuButton()}, nil); err != nil {
 		b.logger.Warn("set Telegram chat menu", "error", err)
 	}
-	return b.call(ctx, "sendMessage", map[string]any{
-		"chat_id":      chatID,
-		"text":         text,
-		"reply_markup": map[string]any{"inline_keyboard": [][]any{{map[string]any{"text": "Open mock-ai", "web_app": map[string]string{"url": b.miniAppURL}}}}},
-	}, nil)
+	return b.sendRich(ctx, chatID, body, b.keyboard(""), effect)
 }
 
 func isStartCommand(text string) bool {

@@ -109,20 +109,21 @@ func (b *Bot) deliver(ctx context.Context, pool *pgxpool.Pool, d delivery) {
 		mark("undeliverable", "invalid Telegram id", 0)
 		return
 	}
-	text, path, err := b.composeResult(ctx, pool, d)
+	// No study profile (or a failed read) only costs the 🎯 line and effect.
+	var target float64
+	_ = pool.QueryRow(ctx, `SELECT target_band::float8 FROM student_profiles WHERE user_id = $1`, d.userID).Scan(&target)
+	body, path, band, err := b.composeResult(ctx, pool, d, target)
 	if err != nil {
 		mark("undeliverable", "result unavailable: "+err.Error(), 0)
 		return
 	}
-	err = b.call(ctx, "sendMessage", map[string]any{
-		"chat_id":                  chatID,
-		"text":                     text,
-		"parse_mode":               "HTML",
-		"disable_web_page_preview": true,
-		"reply_markup": map[string]any{"inline_keyboard": [][]any{{
-			map[string]any{"text": "Open full review", "web_app": map[string]string{"url": b.miniAppURL + path}},
-		}}},
-	}, nil)
+	effect := ""
+	if reachedTarget(band, target) {
+		effect = celebrateEffect
+	}
+	err = b.sendRich(ctx, chatID, body, [][]any{{
+		map[string]any{"text": "Open full review", "style": "success", "web_app": map[string]string{"url": b.miniAppURL + path}},
+	}}, effect)
 	var apiErr *APIError
 	switch {
 	case err == nil:
@@ -138,34 +139,34 @@ func (b *Bot) deliver(ctx context.Context, pool *pgxpool.Pool, d delivery) {
 	}
 }
 
-func (b *Bot) composeResult(ctx context.Context, pool *pgxpool.Pool, d delivery) (string, string, error) {
+func (b *Bot) composeResult(ctx context.Context, pool *pgxpool.Pool, d delivery, target float64) (string, string, float64, error) {
 	switch d.kind {
 	case "exam":
 		var r examResult
 		if err := pool.QueryRow(ctx, `SELECT ev.title, ev.skill::text, a.band_score::float8, a.raw_score::float8, a.question_count
 			FROM attempts a JOIN exam_versions ev ON ev.id = a.exam_version_id WHERE a.id = $1`, d.itemID).
 			Scan(&r.Title, &r.Skill, &r.Band, &r.Correct, &r.Total); err != nil {
-			return "", "", err
+			return "", "", 0, err
 		}
-		return formatExamResult(r), "/#review", nil
+		return formatExamResult(r, target), "/#review", r.Band, nil
 	case "writing":
 		var task string
 		var report []byte
 		if err := pool.QueryRow(ctx, `SELECT COALESCE(reference->>'task', ''), report FROM writing_submissions WHERE id = $1`, d.itemID).Scan(&task, &report); err != nil {
-			return "", "", err
+			return "", "", 0, err
 		}
-		text, err := formatReport("writing", writingTaskLabel(task), report)
-		return text, "/#writing", err
+		text, band, err := formatReport("writing", writingTaskLabel(task), report, target)
+		return text, "/#writing", band, err
 	case "speaking":
 		var topic string
 		var report []byte
 		if err := pool.QueryRow(ctx, `SELECT topic, report FROM speaking_sessions WHERE id = $1`, d.itemID).Scan(&topic, &report); err != nil {
-			return "", "", err
+			return "", "", 0, err
 		}
-		text, err := formatReport("speaking", topic, report)
-		return text, "/#speaking", err
+		text, band, err := formatReport("speaking", topic, report, target)
+		return text, "/#speaking", band, err
 	}
-	return "", "", fmt.Errorf("unknown result kind %q", d.kind)
+	return "", "", 0, fmt.Errorf("unknown result kind %q", d.kind)
 }
 
 type examResult struct {
@@ -176,7 +177,7 @@ type examResult struct {
 	Total   int
 }
 
-func formatExamResult(r examResult) string {
+func formatExamResult(r examResult, target float64) string {
 	icon, skill := "📖", "Reading"
 	if r.Skill == "listening" {
 		icon, skill = "🎧", "Listening"
@@ -185,8 +186,19 @@ func formatExamResult(r examResult) string {
 	if r.Total > 0 {
 		pct = int(math.Round(r.Correct / float64(r.Total) * 100))
 	}
-	return fmt.Sprintf("%s <b>%s result</b>\n%s\n\nBand <b>%.1f</b>\n%s of %d correct (%d%%)\n\nOpen the review to see every answer next to the correct one.",
-		icon, skill, html.EscapeString(r.Title), r.Band, trimScore(r.Correct), r.Total, pct)
+	return fmt.Sprintf("<h3>%s %s result</h3><p>%s</p>%s<p>%s of %d correct (%d%%)</p><footer>Open the review to see every answer next to the correct one.</footer>",
+		icon, skill, html.EscapeString(r.Title), bandBlock(r.Band, target), trimScore(r.Correct), r.Total, pct)
+}
+
+func reachedTarget(band, target float64) bool { return target > 0 && band >= target }
+
+// bandBlock is the headline band, plus a 🎯 line once it meets the target.
+func bandBlock(band, target float64) string {
+	s := fmt.Sprintf("<h1>Band %.1f</h1>", band)
+	if reachedTarget(band, target) {
+		s += fmt.Sprintf("<p>🎯 You reached your Band %.1f target.</p>", target)
+	}
+	return s
 }
 
 func trimScore(v float64) string {
@@ -240,34 +252,38 @@ func criterionLabel(key string) string {
 	return strings.ToUpper(l[:1]) + l[1:]
 }
 
-// formatReport summarises a Writing or Speaking report: overall band, each
-// criterion, and the first next step.
-func formatReport(kind, subject string, raw []byte) (string, error) {
+// formatReport summarises a Writing or Speaking report: overall band, a table
+// of criteria, and the first next step. It returns the overall band.
+func formatReport(kind, subject string, raw []byte, target float64) (string, float64, error) {
 	var r reportSummary
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if r.Overall == nil {
-		return "", errors.New("report has no overall band")
+		return "", 0, errors.New("report has no overall band")
 	}
 	icon, title := "✍️", "Writing report"
 	if kind == "speaking" {
 		icon, title = "🎤", "Speaking report"
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s <b>%s ready</b>\n", icon, title)
+	fmt.Fprintf(&sb, "<h3>%s %s ready</h3>", icon, title)
 	if subject != "" {
-		fmt.Fprintf(&sb, "%s\n", html.EscapeString(subject))
+		fmt.Fprintf(&sb, "<p>%s</p>", html.EscapeString(subject))
 	}
-	fmt.Fprintf(&sb, "\nOverall band <b>%.1f</b>\n", *r.Overall)
+	sb.WriteString(bandBlock(*r.Overall, target))
+	var rows strings.Builder
 	for _, c := range r.Criteria {
 		if c.Score != nil {
-			fmt.Fprintf(&sb, "• %s: %.1f\n", html.EscapeString(criterionLabel(c.Key)), *c.Score)
+			fmt.Fprintf(&rows, "<tr><td>%s</td><td>%.1f</td></tr>", html.EscapeString(criterionLabel(c.Key)), *c.Score)
 		}
 	}
-	if len(r.NextSteps) > 0 && strings.TrimSpace(r.NextSteps[0]) != "" {
-		fmt.Fprintf(&sb, "\n<b>Next step:</b> %s\n", html.EscapeString(strings.TrimSpace(r.NextSteps[0])))
+	if rows.Len() > 0 {
+		fmt.Fprintf(&sb, "<table><tr><th>Criterion</th><th>Band</th></tr>%s</table>", rows.String())
 	}
-	sb.WriteString("\nAI estimate for practice, not an official IELTS score.")
-	return sb.String(), nil
+	if len(r.NextSteps) > 0 && strings.TrimSpace(r.NextSteps[0]) != "" {
+		fmt.Fprintf(&sb, "<blockquote><b>Next step:</b> %s</blockquote>", html.EscapeString(strings.TrimSpace(r.NextSteps[0])))
+	}
+	sb.WriteString("<footer>AI estimate for practice, not an official IELTS score.</footer>")
+	return sb.String(), *r.Overall, nil
 }
